@@ -1,9 +1,11 @@
-version: "3.9"
-
 services:
-  app:
+  api:
     build: .
     container_name: repopulse-dev
+    ports:
+      - "8080:8080"
     volumes:
       - .:/app
-    command: python --version
+    environment:
+      - PYTHONPATH=/app
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
