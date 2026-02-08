@@ -23,8 +23,10 @@ docker compose version
 If not installed:
 Mac:
 https://docs.docker.com/desktop/install/mac-install/
+
 Windows:
 https://docs.docker.com/desktop/install/windows-install/
+
 Linux:
 https://docs.docker.com/desktop/install/linux-install/
 After installation, make sure Docker Desktop is running.
