@@ -46,7 +46,7 @@ After installation, make sure Docker Desktop is running.
 
 Clone the Repository
 
-git clone https://github.com/<your-username>/RepoPulse.git
+git clone https://github.com/kperam1/RepoPulse.git
 
 cd RepoPulse
 
