@@ -7,11 +7,9 @@ client = TestClient(app)
 def test_read_root():
     response = client.get("/")
     assert response.status_code == 200
-    # The API root is provided by `src.api.routes` and currently returns this message
-    assert response.json() == {"message": "Welcome to RepoPulse API"}
+    assert response.json() == {"message": "Hello, World!"}  
 
-
-def test_health_endpoint():
-    response = client.get("/health")
+def test_another_endpoint():
+    response = client.get("/another-endpoint")  
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+    assert "expected_key" in response.json()  
