@@ -1,0 +1,6 @@
+#!/Users/dipgupmac/Downloads/SER-516/project/codebase/RepoPulse/.venv/bin/python3
+import sys
+from httpx import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())
