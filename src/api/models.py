@@ -1,9 +1,14 @@
+import re
 import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+GITHUB_URL_PATTERN = re.compile(
+    r"^https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/?$"
+)
 
 
 class JobStatus(str, Enum):
@@ -22,8 +27,13 @@ class JobRequest(BaseModel):
     def validate_repo_url(cls, v):
         if v is not None:
             v = v.strip()
-            if not v.startswith(("https://github.com/", "http://github.com/")):
-                raise ValueError("repo_url must be a valid GitHub URL")
+            if not v:
+                raise ValueError("repo_url cannot be empty")
+            if not GITHUB_URL_PATTERN.match(v):
+                raise ValueError(
+                    "repo_url must be a valid GitHub URL in the format "
+                    "https://github.com/owner/repo"
+                )
         return v
 
     @field_validator("local_path")
@@ -31,8 +41,12 @@ class JobRequest(BaseModel):
     def validate_local_path(cls, v):
         if v is not None:
             v = v.strip()
+            if not v:
+                raise ValueError("local_path cannot be empty")
             if not v.startswith("/"):
                 raise ValueError("local_path must be an absolute path starting with /")
+            if ".." in v:
+                raise ValueError("local_path must not contain '..'")
         return v
 
     def model_post_init(self, __context):
@@ -59,3 +73,4 @@ class HealthResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+

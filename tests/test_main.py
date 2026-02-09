@@ -50,7 +50,8 @@ def test_create_job_with_local_path():
 
 def test_create_job_missing_fields():
     response = client.post("/jobs", json={})
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert "detail" in response.json()
 
 
 def test_create_job_both_fields_provided():
@@ -61,7 +62,7 @@ def test_create_job_both_fields_provided():
             "local_path": "/home/user/projects/my-repo",
         },
     )
-    assert response.status_code == 422
+    assert response.status_code == 400
 
 
 def test_create_job_invalid_repo_url():
@@ -69,7 +70,7 @@ def test_create_job_invalid_repo_url():
         "/jobs",
         json={"repo_url": "not-a-valid-url"},
     )
-    assert response.status_code == 422
+    assert response.status_code == 400
 
 
 def test_create_job_invalid_local_path():
@@ -77,7 +78,86 @@ def test_create_job_invalid_local_path():
         "/jobs",
         json={"local_path": "relative/path/to/repo"},
     )
-    assert response.status_code == 422
+    assert response.status_code == 400
+
+
+def test_job_id_is_valid_uuid():
+    response = client.post(
+        "/jobs",
+        json={"repo_url": "https://github.com/kperam1/RepoPulse"},
+    )
+    assert response.status_code == 201
+    import uuid
+    job_id = response.json()["job_id"]
+    uuid.UUID(job_id)
+
+
+def test_repo_url_missing_owner_or_repo():
+    response = client.post(
+        "/jobs",
+        json={"repo_url": "https://github.com/"},
+    )
+    assert response.status_code == 400
+
+
+def test_repo_url_not_github():
+    response = client.post(
+        "/jobs",
+        json={"repo_url": "https://gitlab.com/owner/repo"},
+    )
+    assert response.status_code == 400
+
+
+def test_repo_url_random_string():
+    response = client.post(
+        "/jobs",
+        json={"repo_url": "ftp://something.com/stuff"},
+    )
+    assert response.status_code == 400
+
+
+def test_repo_url_empty_string():
+    response = client.post(
+        "/jobs",
+        json={"repo_url": ""},
+    )
+    assert response.status_code == 400
+
+
+def test_repo_url_whitespace_only():
+    response = client.post(
+        "/jobs",
+        json={"repo_url": "   "},
+    )
+    assert response.status_code == 400
+
+
+def test_local_path_with_dotdot():
+    response = client.post(
+        "/jobs",
+        json={"local_path": "/home/user/../etc/passwd"},
+    )
+    assert response.status_code == 400
+
+
+def test_local_path_empty_string():
+    response = client.post(
+        "/jobs",
+        json={"local_path": ""},
+    )
+    assert response.status_code == 400
+
+
+def test_error_response_has_detail():
+    response = client.post(
+        "/jobs",
+        json={"repo_url": "bad-url"},
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "detail" in data
+    assert isinstance(data["detail"], list)
+    assert len(data["detail"]) > 0
 
 
 def test_openapi_docs_available():
@@ -88,9 +168,3 @@ def test_openapi_docs_available():
     assert "/health" in data["paths"]
     assert "/jobs" in data["paths"]
 
-    response = client.get("/openapi.json")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["info"]["title"] == "RepoPulse API"
-    assert "/health" in data["paths"]
-    assert "/jobs" in data["paths"]
