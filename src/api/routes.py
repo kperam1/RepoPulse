@@ -1,7 +1,9 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from pydantic import ValidationError
 
 from src.api.models import (
     ErrorResponse,
@@ -10,6 +12,8 @@ from src.api.models import (
     JobResponse,
     JobStatus,
 )
+
+logger = logging.getLogger("repopulse")
 
 router = APIRouter()
 
@@ -31,7 +35,22 @@ async def health_check():
 
 
 @router.post("/jobs", response_model=JobResponse, status_code=201)
-async def create_job(job_request: JobRequest):
+async def create_job(request: Request):
+    body = await request.json()
+    logger.info(f"Incoming job request: {body}")
+
+    try:
+        job_request = JobRequest(**body)
+    except ValidationError as e:
+        errors = e.errors()
+        messages = [err["msg"] for err in errors]
+        logger.warning(f"Validation failed: {messages}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=400,
+            content={"detail": messages},
+        )
+
     job_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
 
@@ -45,5 +64,7 @@ async def create_job(job_request: JobRequest):
     )
 
     jobs_store[job_id] = job
+    logger.info(f"Job created: {job_id}")
 
     return job
+
