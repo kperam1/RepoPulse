@@ -1,75 +1,94 @@
-Prerequisites
-Make sure the following are installed on your system:
-1. Git
-   Used to clone the repository.
-   
-Check if installed:
+<h1 align="center">RepoPulse</h1>
 
-git --version
+<p align="center">
+<b>Metrics and monitoring tool for GitHub repositories</b><br>
+<i>FastAPI-based API for repository analytics, health, and insights</i>
+</p>
 
-If not installed:
+---
 
-Mac (Homebrew):
+## Overview
 
-brew install git
+RepoPulse is a containerized API service that provides metrics, monitoring, and analytics for GitHub repositories. Built with FastAPI, it enables users to query repository health, activity, and other insights programmatically or via browser.
 
-Windows:
+## Features
 
-Download from: https://git-scm.com/download/win
+- Exposes RESTful API endpoints for repository metrics
+- Containerized with Docker for easy deployment
+- Prometheus metrics integration
+- Configurable via environment variables
+- Includes automated tests with pytest
 
-Linux:
+## Requirements
 
-sudo apt install git
+- [Git](https://git-scm.com/)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose)
 
-2. Docker Desktop (includes Docker Compose)
-   
-Required to build and run containers.
+## Quick Start
 
-Check if installed:
+1. **Clone the repository:**
+   ```sh
+   git clone https://github.com/kperam1/RepoPulse.git
+   cd RepoPulse
+   ```
 
-docker --version
+2. **Build the Docker image:**
+   ```sh
+   docker compose build
+   ```
 
-docker compose version
+3. **Run the service:**
+   ```sh
+   docker compose up
+   ```
 
-If not installed:
+4. **Access the API:**
+   - Open [http://localhost:8080/](http://localhost:8080/) in your browser
+   - Or test with curl:
+     ```sh
+     curl http://localhost:8080/
+     ```
 
-Mac:
-https://docs.docker.com/desktop/install/mac-install/
+5. **Stop the service:**
+   ```sh
+   docker compose down
+   ```
 
-Windows:
-https://docs.docker.com/desktop/install/windows-install/
+## API Documentation
 
-Linux:
-https://docs.docker.com/desktop/install/linux-install/
+- Interactive docs: [http://localhost:8080/docs](http://localhost:8080/docs)
+- ReDoc: [http://localhost:8080/redoc](http://localhost:8080/redoc)
 
-After installation, make sure Docker Desktop is running.
+## Project Structure
 
-Clone the Repository
+```
+RepoPulse/
+├── src/
+│   ├── main.py           # FastAPI app entrypoint
+│   ├── api/              # API routes and models
+│   ├── core/             # Core config and utilities
+│   └── worker/           # Background worker logic
+├── tests/                # Pytest test cases
+├── requirements.txt      # Python dependencies
+├── Dockerfile            # Docker build file
+├── docker-compose.yml    # Multi-container setup
+└── README.md             # Project documentation
+```
 
-git clone https://github.com/kperam1/RepoPulse.git
+## Development
 
-cd RepoPulse
+1. Install Python 3.8+ and [pip](https://pip.pypa.io/en/stable/)
+2. Install dependencies:
+   ```sh
+   pip install -r requirements.txt
+   ```
+3. Run tests:
+   ```sh
+   pytest
+   ```
 
-Build the Project
+## Configuration
 
-docker compose build
-
-Run the Project
-
-docker compose up
-
-Access the API
-
-Open in browser:
-
-http://localhost:8080/
-
-Or test using curl:
-
-curl http://localhost:8080/
-
-Stop the Project
-
-docker compose down
+Edit `src/core/config.py` to adjust environment variables and settings as needed.
 
 
