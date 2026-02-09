@@ -5,11 +5,13 @@ from src.main import app
 client = TestClient(app)
 
 def test_read_root():
+    """Test that the root endpoint returns the welcome message."""
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json() == {"message": "Hello, World!"}  
+    assert response.json() == {"message": "Welcome to RepoPulse API"}
 
-def test_another_endpoint():
-    response = client.get("/another-endpoint")  
+def test_health_check():
+    """Test that the health check endpoint returns healthy status."""
+    response = client.get("/health")
     assert response.status_code == 200
-    assert "expected_key" in response.json()  
+    assert response.json() == {"status": "healthy"}
