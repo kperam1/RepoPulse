@@ -1,12 +1,5 @@
 <h1 align="center">RepoPulse</h1>
 
-<p align="center">
-<b>Metrics and monitoring tool for GitHub repositories</b><br>
-<i>FastAPI-based API for repository analytics, health, and insights</i>
-</p>
-
----
-
 ## Overview
 
 RepoPulse is a containerized API service that provides metrics, monitoring, and analytics for GitHub repositories. Built with FastAPI, it enables users to query repository health, activity, and other insights programmatically or via browser.
