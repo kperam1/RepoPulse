@@ -25,12 +25,17 @@ class GitRepoCloner:
         """
         self.temp_dir = tempfile.mkdtemp(prefix="repopulse_clone_")
         try:
+            dest_path = os.path.join(self.temp_dir, os.path.basename(repo_url_or_path))
             if os.path.isdir(repo_url_or_path):
-                #copy
-                shutil.copytree(repo_url_or_path, os.path.join(self.temp_dir, os.path.basename(repo_url_or_path)))
-                return os.path.join(self.temp_dir, os.path.basename(repo_url_or_path))
+                # Handle existing destination directory
+                shutil.copytree(
+                    repo_url_or_path,
+                    dest_path,
+                    dirs_exist_ok=True
+                )
+                return dest_path
             else:
-                #clone
+                #clone the repo to the temp directory
                 dest = os.path.join(self.temp_dir, "repo")
                 if GITPYTHON_AVAILABLE:
                     Repo.clone_from(repo_url_or_path, dest)
