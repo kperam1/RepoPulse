@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "--strict-markers --maxfail=1 -q --cov=src --cov-branch --cov-report=term-missing --cov-fail-under=80"
+testpaths = ["tests"]
