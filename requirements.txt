@@ -5,3 +5,4 @@ prometheus-client
 pydantic
 pytest
 httpx
+pytest-cov

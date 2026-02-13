@@ -74,3 +74,9 @@ docker-compose.override.yml
 *.tmp
 *.temp
 .cache/
+
+.venv/
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
