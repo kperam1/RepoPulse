@@ -1,8 +1,10 @@
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from src.api.models import (
@@ -11,7 +13,12 @@ from src.api.models import (
     JobRequest,
     JobResponse,
     JobStatus,
+    LOCRequest,
+    ProjectLOCResponse,
+    PackageLOCResponse,
+    FileLOCResponse,
 )
+from src.metrics.loc import count_loc_in_directory
 
 logger = logging.getLogger("repopulse")
 
@@ -45,7 +52,6 @@ async def create_job(request: Request):
         errors = e.errors()
         messages = [err["msg"] for err in errors]
         logger.warning(f"Validation failed: {messages}")
-        from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=400,
             content={"detail": messages},
@@ -67,4 +73,78 @@ async def create_job(request: Request):
     logger.info(f"Job created: {job_id}")
 
     return job
+
+
+# ── LOC Metric Endpoint ─────────────────────────────────────────────────────
+
+
+@router.post("/metrics/loc", response_model=ProjectLOCResponse, status_code=200)
+async def compute_loc(request: Request):
+    """
+    Compute Lines of Code (LOC) for a local repository.
+
+    Scans .java, .py, and .ts files. Excludes blank lines,
+    whitespace-only lines, and brace-only lines.
+    Returns counts at file, package, and project scope.
+    """
+    body = await request.json()
+    logger.info(f"LOC metric request: {body}")
+
+    try:
+        loc_request = LOCRequest(**body)
+    except ValidationError as e:
+        errors = e.errors()
+        messages = [err["msg"] for err in errors]
+        logger.warning(f"LOC validation failed: {messages}")
+        return JSONResponse(
+            status_code=400,
+            content={"detail": messages},
+        )
+
+    repo_path = loc_request.repo_path
+
+    if not os.path.isdir(repo_path):
+        logger.warning(f"LOC path not found: {repo_path}")
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"Directory not found: {repo_path}"},
+        )
+
+    project_loc = count_loc_in_directory(repo_path)
+
+    return ProjectLOCResponse(
+        project_root=project_loc.project_root,
+        total_loc=project_loc.total_loc,
+        total_files=project_loc.total_files,
+        total_blank_lines=project_loc.total_blank_lines,
+        total_excluded_lines=project_loc.total_excluded_lines,
+        packages=[
+            PackageLOCResponse(
+                package=pkg.package,
+                loc=pkg.loc,
+                file_count=pkg.file_count,
+                files=[
+                    FileLOCResponse(
+                        path=f.path,
+                        total_lines=f.total_lines,
+                        loc=f.loc,
+                        blank_lines=f.blank_lines,
+                        excluded_lines=f.excluded_lines,
+                    )
+                    for f in pkg.files
+                ],
+            )
+            for pkg in project_loc.packages
+        ],
+        files=[
+            FileLOCResponse(
+                path=f.path,
+                total_lines=f.total_lines,
+                loc=f.loc,
+                blank_lines=f.blank_lines,
+                excluded_lines=f.excluded_lines,
+            )
+            for f in project_loc.files
+        ],
+    )
 

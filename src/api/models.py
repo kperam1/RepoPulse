@@ -74,3 +74,49 @@ class HealthResponse(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
 
+
+# ── LOC Metric Models ────────────────────────────────────────────────────────
+
+
+class FileLOCResponse(BaseModel):
+    path: str
+    total_lines: int
+    loc: int
+    blank_lines: int
+    excluded_lines: int
+
+
+class PackageLOCResponse(BaseModel):
+    package: str
+    loc: int
+    file_count: int
+    files: list[FileLOCResponse]
+
+
+class ProjectLOCResponse(BaseModel):
+    project_root: str
+    total_loc: int
+    total_files: int
+    total_blank_lines: int
+    total_excluded_lines: int
+    packages: list[PackageLOCResponse]
+    files: list[FileLOCResponse]
+
+
+class LOCRequest(BaseModel):
+    repo_path: str = Field(
+        ..., description="Absolute path to the local repository to analyse"
+    )
+
+    @field_validator("repo_path")
+    @classmethod
+    def validate_repo_path(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("repo_path cannot be empty")
+        if not v.startswith("/"):
+            raise ValueError("repo_path must be an absolute path starting with /")
+        if ".." in v:
+            raise ValueError("repo_path must not contain '..'")
+        return v
+

@@ -101,6 +101,61 @@ build.bat restart         REM stop → rebuild → test → start
 - Interactive docs: [http://localhost:8080/docs](http://localhost:8080/docs)
 - ReDoc: [http://localhost:8080/redoc](http://localhost:8080/redoc)
 
+### Endpoints
+
+| Method | Path             | Description                          |
+|--------|------------------|--------------------------------------|
+| GET    | `/`              | Welcome message                      |
+| GET    | `/health`        | Health check                         |
+| POST   | `/jobs`          | Submit a repository analysis job     |
+| POST   | `/metrics/loc`   | Compute Lines of Code metrics        |
+
+### LOC Metric (`POST /metrics/loc`)
+
+Compute Lines of Code for a local repository. Supports `.java`, `.py`, and `.ts` files.
+
+**Request:**
+
+```json
+{
+  "repo_path": "/absolute/path/to/repo"
+}
+```
+
+**Response:**
+
+```json
+{
+  "project_root": "/absolute/path/to/repo",
+  "total_loc": 42,
+  "total_files": 3,
+  "total_blank_lines": 8,
+  "total_excluded_lines": 6,
+  "packages": [
+    {
+      "package": "src/com/example",
+      "loc": 30,
+      "file_count": 2,
+      "files": [...]
+    }
+  ],
+  "files": [
+    {
+      "path": "src/com/example/Calculator.java",
+      "total_lines": 27,
+      "loc": 15,
+      "blank_lines": 4,
+      "excluded_lines": 8
+    }
+  ]
+}
+```
+
+**Exclusion rules:**
+- Blank lines (empty or only newline)
+- Lines with only whitespace
+- Lines with only curly braces `{` or `}`
+
 ## Project Structure
 
 ```
@@ -109,8 +164,13 @@ RepoPulse/
 │   ├── main.py           # FastAPI app entrypoint
 │   ├── api/              # API routes and models
 │   ├── core/             # Core config and utilities
+│   ├── metrics/          # Metric computation modules
+│   │   └── loc.py        # Lines of Code metric
 │   └── worker/           # Background worker logic
 ├── tests/                # Pytest test cases
+│   ├── sample_files/     # Sample Java/Python/TS files for testing
+│   ├── test_main.py      # API & health check tests
+│   └── test_loc.py       # LOC metric tests
 ├── requirements.txt      # Python dependencies
 ├── Dockerfile            # Docker build file
 ├── docker-compose.yml    # Multi-container setup
