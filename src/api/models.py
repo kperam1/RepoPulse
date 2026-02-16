@@ -84,12 +84,14 @@ class FileLOCResponse(BaseModel):
     loc: int
     blank_lines: int
     excluded_lines: int
+    comment_lines: int
 
 
 class PackageLOCResponse(BaseModel):
     package: str
     loc: int
     file_count: int
+    comment_lines: int
     files: list[FileLOCResponse]
 
 
@@ -99,6 +101,7 @@ class ProjectLOCResponse(BaseModel):
     total_files: int
     total_blank_lines: int
     total_excluded_lines: int
+    total_comment_lines: int
     packages: list[PackageLOCResponse]
     files: list[FileLOCResponse]
 
