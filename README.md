@@ -193,4 +193,11 @@ RepoPulse/
 
 Edit `src/core/config.py` to change environment variables and settings if you want.
 
+Running Tests (Local)
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m pytest
+
 
