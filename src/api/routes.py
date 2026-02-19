@@ -118,11 +118,13 @@ async def compute_loc(request: Request):
         total_files=project_loc.total_files,
         total_blank_lines=project_loc.total_blank_lines,
         total_excluded_lines=project_loc.total_excluded_lines,
+        total_comment_lines=project_loc.total_comment_lines,
         packages=[
             PackageLOCResponse(
                 package=pkg.package,
                 loc=pkg.loc,
                 file_count=pkg.file_count,
+                comment_lines=pkg.comment_lines,
                 files=[
                     FileLOCResponse(
                         path=f.path,
@@ -130,6 +132,7 @@ async def compute_loc(request: Request):
                         loc=f.loc,
                         blank_lines=f.blank_lines,
                         excluded_lines=f.excluded_lines,
+                        comment_lines=f.comment_lines,
                     )
                     for f in pkg.files
                 ],
@@ -143,6 +146,7 @@ async def compute_loc(request: Request):
                 loc=f.loc,
                 blank_lines=f.blank_lines,
                 excluded_lines=f.excluded_lines,
+                comment_lines=f.comment_lines,
             )
             for f in project_loc.files
         ],
