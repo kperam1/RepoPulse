@@ -1,347 +1,168 @@
-## LOC Metrics Data Model
-
-The LOCMetrics schema is used to represent lines-of-code metrics at project, package, or file granularity. Below are the fields:
-
-| Field         | Type    | Description                                                      |
-|-------------- |---------|------------------------------------------------------------------|
-| repo_id       | string  | Unique identifier for the repository                             |
-| repo_name     | string  | Repository name                                                  |
-| branch        | string  | Branch name                                                      |
-| commit_hash   | string  | Commit hash                                                      |
-| language      | string  | Programming language                                             |
-| granularity   | string  | Granularity: 'project', 'package', or 'file'                     |
-| project_name  | string? | Project name if applicable                                       |
-| package_name  | string? | Package name if applicable                                       |
-| file_path     | string? | File path if applicable                                          |
-| total_loc     | int     | Total lines of code                                              |
-| code_loc      | int     | Lines of code (excluding comments and blanks)                    |
-| comment_loc   | int     | Lines of comments                                                |
-| blank_loc     | int     | Blank lines                                                      |
-| collected_at  | string  | Timestamp when metrics were collected (ISO format)               |
-
-Example (file granularity):
-
-```
-{
-   "repo_id": "123",
-   "repo_name": "example-repo",
-   "branch": "main",
-   "commit_hash": "abc123",
-   "language": "Python",
-   "granularity": "file",
-   "file_path": "src/main.py",
-   "total_loc": 1000,
-   "code_loc": 800,
-   "comment_loc": 150,
-   "blank_loc": 50,
-   "collected_at": "2026-02-12T12:00:00Z"
-}
-```
-Prerequisites
-Make sure the following are installed on your system:
-1. Git
-   Used to clone the repository.
-   
-Check if installed:
-
 # RepoPulse
 
-## What does RepoPulse do?
+A tool that analyzes GitHub repositories and computes Lines of Code (LOC) metrics. Built with FastAPI, InfluxDB, and Grafana — all running in Docker.
 
-- Lets you ask for stats about your GitHub repos
-- Runs in Docker, so you don't need to set up a bunch of stuff
-- Has Prometheus metrics
-- You can change settings with environment variables
-- Comes with tests (pytest)
-
-## What do you need?
+## Prerequisites
 
 - [Git](https://git-scm.com/)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose)
-- Python 3.8+ and [pip](https://pip.pypa.io/en/stable/) (for development)
 
-## Quick Start — Automated Build (Recommended)
+## Getting Started
 
-The build scripts do everything for you! They check if you have the right tools, install stuff, build the containers, and run tests. You don't need an IDE.
-
-### Linux / macOS
-
-```sh
-git clone https://github.com/kperam1/RepoPulse.git
-cd RepoPulse
-chmod +x build.sh
-./build.sh
-```
-
-### Windows
-
-```sh
-git clone https://github.com/kperam1/RepoPulse.git
-cd RepoPulse
-build.bat
-```
-
-### Build Script Options
-
-| Command / Flag      | What it does                                 |
-|--------------------|----------------------------------------------|
-| (no args)          | Full build + test + start the app             |
-| stop               | Stop all running containers                   |
-| restart            | Stop, rebuild, test, and start                |
-| --skip-tests       | Build and start, skip tests                   |
-| -h / --help        | Show usage info                              |
-
-#### Examples
-
-```sh
-# Linux / macOS
-./build.sh                # build, test, and start
-./build.sh --skip-tests   # build and start (no tests)
-./build.sh stop           # stop the running app
-./build.sh restart        # stop → rebuild → test → start
-
-# Windows
-build.bat                 REM build, test, and start
-build.bat --skip-tests    REM build and start (no tests)
-build.bat stop            REM stop the running app
-build.bat restart         REM stop → rebuild → test → start
-```
-
-### What the build scripts do
-
-- Check if git, docker, and docker compose are installed and Docker is running
-- Make sure requirements.txt exists (dependencies are installed inside the Docker image)
-- Build all containers from scratch
-- Run tests with pytest inside the container (unless you skip tests)
-- Start the app in the background
-
-## Manual Steps (if you want)
-
-1. Clone the repository:
+1. Clone the repo and create a `.env` file:
    ```sh
    git clone https://github.com/kperam1/RepoPulse.git
    cd RepoPulse
+   cp .env.example .env
    ```
-2. Build the Docker image:
+
+2. Build and run:
    ```sh
-   docker compose build
+   chmod +x build.sh
+   ./build.sh
    ```
-3. Run the service:
-   ```sh
-   docker compose up
-   ```
-4. Access the API:
-   - Open [http://localhost:8080/](http://localhost:8080/) in your browser
-   - Or test with curl:
-     ```sh
-     curl http://localhost:8080/
-     ```
-5. Stop the service:
-   ```sh
-   docker compose down
-   ```
+   On Windows use `build.bat` instead.
 
-## API Docs
+3. The build script will:
+   - Check that Git and Docker are installed
+   - Build all containers
+   - Run tests with pytest
+   - Start the app in the background
 
-- Interactive docs: [http://localhost:8080/docs](http://localhost:8080/docs)
-- ReDoc: [http://localhost:8080/redoc](http://localhost:8080/redoc)
+### Build Options
 
-### Endpoints
-
-| Method | Path             | Description                          |
-|--------|------------------|--------------------------------------|
-| GET    | `/`              | Welcome message                      |
-| GET    | `/health`        | Health check                         |
-| POST   | `/jobs`          | Submit a repository analysis job     |
-| POST   | `/metrics/loc`   | Compute Lines of Code metrics        |
-
-### LOC Metric (`POST /metrics/loc`)
-
-Compute Lines of Code for a local repository. Supports `.java`, `.py`, and `.ts` files.
-
-**Request:**
-
-```json
-{
-  "repo_path": "/absolute/path/to/repo"
-}
+```sh
+./build.sh                # full build + test + start
+./build.sh --skip-tests   # build + start (skip tests)
+./build.sh stop           # stop all containers
+./build.sh restart        # stop → rebuild → test → start
 ```
 
-**Response:**
+## API Endpoints
 
+Once running, the API is at **http://localhost:8080**. Interactive docs at [http://localhost:8080/docs](http://localhost:8080/docs).
+
+| Method | Path           | Description                                      |
+|--------|----------------|--------------------------------------------------|
+| GET    | `/`            | Welcome message                                  |
+| GET    | `/health`      | Health check                                     |
+| GET    | `/health/db`   | InfluxDB connection check                        |
+| POST   | `/jobs`        | Submit a repository analysis job                 |
+| POST   | `/metrics/loc` | Compute LOC for a local repo path                |
+| POST   | `/analyze`     | **Clone a GitHub repo → compute LOC → store in InfluxDB** |
+
+### Testing the `/analyze` endpoint
+
+This is the main endpoint. Give it a public GitHub URL and it clones the repo, counts lines of code, writes the results to InfluxDB, and returns everything.
+
+```sh
+curl -X POST http://localhost:8080/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git"}'
+```
+
+Example response (trimmed):
 ```json
 {
-  "project_root": "/absolute/path/to/repo",
-  "total_loc": 42,
+  "project_root": "/tmp/...",
+  "total_loc": 1958,
   "total_files": 3,
-  "total_blank_lines": 8,
-  "total_excluded_lines": 6,
-  "packages": [
-    {
-      "package": "src/com/example",
-      "loc": 30,
-      "file_count": 2,
-      "files": [...]
-    }
-  ],
+  "total_blank_lines": 42,
+  "total_excluded_lines": 0,
+  "total_comment_lines": 8,
+  "packages": ["..."],
   "files": [
     {
-      "path": "src/com/example/Calculator.java",
-      "total_lines": 27,
-      "loc": 15,
-      "blank_lines": 4,
-      "excluded_lines": 8
+      "path": "README.md",
+      "total_lines": 1200,
+      "loc": 980,
+      "blank_lines": 20,
+      "excluded_lines": 0,
+      "comment_lines": 0
     }
   ]
 }
 ```
 
-**Exclusion rules:**
-- Blank lines (empty or only newline)
-- Lines with only whitespace
-- Lines with only curly braces `{` or `}`
+After calling `/analyze`, the metrics are stored in InfluxDB and show up on the Grafana dashboard automatically.
+
+## Grafana Dashboard
+
+Grafana is auto-provisioned with the InfluxDB datasource and a LOC metrics dashboard.
+
+- **URL:** http://localhost:3000
+- **Username:** `admin`
+- **Password:** `repopulse` (configurable in `.env`)
+
+The dashboard shows:
+- Total LOC (stat panel)
+- Comment and blank line counts
+- LOC by file — top 10 (bar chart)
+- LOC by package (bar chart)
+- LOC over time (time series)
+
+## Environment Variables
+
+All config is in `.env`. Copy from the example:
+
+```sh
+cp .env.example .env
+```
+
+Key variables:
+
+| Variable               | Default            | Purpose                       |
+|------------------------|--------------------|-------------------------------|
+| `INFLUX_INIT_TOKEN`   | `devtoken12345`    | InfluxDB admin token          |
+| `INFLUX_ORG`          | `RepoPulseOrg`     | InfluxDB organization         |
+| `INFLUX_BUCKET`       | `repopulse_metrics`| InfluxDB bucket               |
+| `INFLUX_RETENTION_DAYS`| `90`              | Metric retention (days)       |
+| `GF_ADMIN_USER`       | `admin`            | Grafana admin username        |
+| `GF_ADMIN_PASSWORD`   | `repopulse`        | Grafana admin password        |
 
 ## Project Structure
 
 ```
 RepoPulse/
 ├── src/
-│   ├── main.py           # FastAPI app entrypoint
-│   ├── api/              # API routes and models
-│   ├── core/             # Core config and utilities
-│   ├── metrics/          # Metric computation modules
-│   │   └── loc.py        # Lines of Code metric
-│   └── worker/           # Background worker logic
-├── tests/                # Pytest test cases
-│   ├── sample_files/     # Sample Java/Python/TS files for testing
-│   ├── test_main.py      # API & health check tests
-│   └── test_loc.py       # LOC metric tests
-├── requirements.txt      # Python dependencies
-├── Dockerfile            # Docker build file
-├── docker-compose.yml    # Multi-container setup
-└── README.md             # Project documentation
+│   ├── main.py              # FastAPI entrypoint
+│   ├── api/
+│   │   ├── models.py        # Pydantic request/response models
+│   │   └── routes.py        # All API endpoints
+│   ├── core/
+│   │   ├── config.py        # Environment variable config
+│   │   ├── git_clone.py     # Git clone utility (shallow clone)
+│   │   └── influx.py        # InfluxDB client wrapper
+│   ├── metrics/
+│   │   └── loc.py           # LOC counting logic
+│   └── worker/
+│       └── worker.py        # Background worker
+├── tests/                   # Pytest tests
+├── monitoring/
+│   ├── dashboards/          # Grafana dashboard JSON
+│   └── provisioning/        # Grafana auto-provisioning configs
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── build.sh / build.bat
+└── .env.example
 ```
 
-## Development
+## Running Tests Locally
 
-1. Install Python 3.8+ and [pip](https://pip.pypa.io/en/stable/)
-2. Install dependencies:
-   ```sh
-   pip install -r requirements.txt
-   ```
-3. Run tests:
-   ```sh
-   pytest
-   ```
-
-## Configuration
-
-Edit `src/core/config.py` to change environment variables and settings if you want.
-
-Running Tests (Local)
-
+```sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest
-
-
-## InfluxDB Integration (time-series storage)
-
-This project can write LOC metrics into an InfluxDB v2 instance. The compose setup can include an `influxdb` service and the API/worker are configured to connect to it when the following environment variables are provided.
-
-Create a `.env` file (don't commit real secrets) with values like:
-
-```
-INFLUX_INIT_USERNAME=repopulse
-INFLUX_INIT_PASSWORD=change_me_locally
-INFLUX_ORG=RepoPulseOrg
-INFLUX_BUCKET=repopulse_metrics
-INFLUX_INIT_TOKEN=devtoken12345
-INFLUX_RETENTION_DAYS=90
-INFLUX_URL=http://influxdb:8086
-INFLUX_TOKEN=devtoken12345
-
-# Grafana
-GF_ADMIN_USER=admin
-GF_ADMIN_PASSWORD=admin
+pytest
 ```
 
-How it works:
-- If you enable the `influxdb` service in `docker-compose.yml`, the container is initialized with the org, bucket and admin token (for development only).
-- The `api` and `worker` services use `INFLUX_URL` and `INFLUX_TOKEN` to connect and write LOC metrics.
-- The metrics measurement is `loc_metrics` and fields include `total_loc`, `code_loc`, `comment_loc`, `blank_loc`. Tags include `repo_name`, `repo_id`, `branch`, `language`, and `granularity`.
+Or just run `./build.sh` — it runs tests inside Docker automatically.
 
-Health & verification:
-- Start the stack: `docker compose up -d influxdb api`
-- Visit the Influx UI at `http://localhost:8086` and log in with the init token.
-- The API exposes `/health/db` which returns the InfluxDB health status.
+## Services
 
-Retention and production:
-- For production, use Docker secrets for `INFLUX_INIT_TOKEN` / `INFLUX_INIT_PASSWORD` and avoid committing `.env` files.
-- Bucket retention is configurable via `INFLUX_RETENTION_DAYS` (defaults to 90 days).
-
-If you want, I can also add an integration pytest that writes and queries a point in the running InfluxDB instance.
-
-## Grafana Dashboard (visualization)
-
-Grafana is included in the Docker Compose stack and is **auto-provisioned** with the InfluxDB datasource and the RepoPulse LOC Metrics dashboard on first start.
-
-### Quick start
-
-```sh
-docker compose up -d
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-| Setting      | Default value |
-|-------------|---------------|
-| **URL**     | `http://localhost:3000` |
-| **Username** | `admin` (set via `GF_ADMIN_USER` in `.env`) |
-| **Password** | `admin` (set via `GF_ADMIN_PASSWORD` in `.env`) |
-
-### What's provisioned automatically
-
-- **Datasource** — InfluxDB (Flux) pointing at `http://influxdb:8086` with the org, bucket, and token from `.env`.
-- **Dashboard** — *RepoPulse – LOC Metrics* is loaded from `monitoring/dashboards/loc-metrics.json`.
-
-### Verifying the setup
-
-1. Navigate to **Connections → Data sources → InfluxDB** and click **Test**. You should see *"datasource is working"*.
-2. Navigate to **Dashboards** — the *RepoPulse – LOC Metrics* dashboard should be listed.
-3. Via CLI:
-   ```sh
-   # Health check
-   curl -s http://localhost:3000/api/health
-
-   # List datasources
-   curl -s -u admin:admin http://localhost:3000/api/datasources
-
-   # Test datasource connection
-   curl -s -u admin:admin -X POST http://localhost:3000/api/datasources/1/health
-   ```
-
-### Container details
-
-| Container            | Image                  | Port   | Purpose              |
-|---------------------|------------------------|--------|----------------------|
-| `repopulse-grafana` | `grafana/grafana:11.5.1` | `3000` | Dashboards & visualization |
-| `repopulse-influx`  | `influxdb:2.8`          | `8086` | Time-series storage   |
-| `repopulse-dev`     | (local build)           | `8080` | RepoPulse API         |
-
-### File layout
-
-```
-monitoring/
-├── RepoPulse - Grafana - Dashboard.json   # original export
-├── dashboards/
-│   └── loc-metrics.json                   # provisioned into Grafana
-└── provisioning/
-    ├── dashboards/
-    │   └── dashboards.yml                 # dashboard provider config
-    └── datasources/
-        └── influxdb.yml                   # InfluxDB datasource config
-```
-
-
+| Container           | Image                    | Port   | What it does            |
+|---------------------|--------------------------|--------|-------------------------|
+| `repopulse-dev`     | local build              | `8080` | FastAPI backend         |
+| `repopulse-influx`  | `influxdb:2.8`           | `8086` | Time-series DB          |
+| `repopulse-grafana` | `grafana/grafana:11.5.1` | `3000` | Dashboard visualization |

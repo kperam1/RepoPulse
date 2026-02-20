@@ -6,9 +6,10 @@ class Config:
     HOST = os.getenv("HOST", "127.0.0.1")
     PORT = int(os.getenv("PORT", 8000))
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
-    # InfluxDB configuration
+    # InfluxDB
     INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086")
     INFLUX_TOKEN = os.getenv("INFLUX_TOKEN")
+    # Also support reading token from a file (for Docker secrets)
     INFLUX_TOKEN_FILE = os.getenv("INFLUX_TOKEN_FILE")
     if not INFLUX_TOKEN and INFLUX_TOKEN_FILE and os.path.exists(INFLUX_TOKEN_FILE):
         try:

@@ -27,28 +27,22 @@ def test_cleanup_removes_temp_dir(tmp_path):
 
 def test_clone_invalid_url():
     cloner = GitRepoCloner()
+    # Use a non-routable host so git fails fast without prompting for credentials
     with pytest.raises(GitCloneError):
-        cloner.clone("https://github.com/invalid/invalid-repo-url-should-fail")
+        cloner.clone("https://invalid.invalid/no-such/repo.git")
     cloner.cleanup()
 
 def test_clone_valid_public_repo(monkeypatch):
     cloner = GitRepoCloner()
     repo_url = "https://github.com/octocat/Hello-World"
-    # Patch Repo.clone_from or subprocess.run to simulate clone
-    if hasattr(cloner, 'GITPYTHON_AVAILABLE') and cloner.GITPYTHON_AVAILABLE:
-        def fake_clone_from(url, dest):
-            os.makedirs(dest, exist_ok=True)
-            with open(os.path.join(dest, "README.md"), "w") as f:
-                f.write("# Hello World\n")
-        monkeypatch.setattr("git.Repo.clone_from", fake_clone_from)
-    else:
-        def fake_run(args, capture_output, text):
-            dest = args[-1]
-            os.makedirs(dest, exist_ok=True)
-            with open(os.path.join(dest, "README.md"), "w") as f:
-                f.write("# Hello World\n")
-            return type("Result", (), {"returncode": 0, "stderr": ""})()
-        monkeypatch.setattr("subprocess.run", fake_run)
+    # Patch subprocess.run to simulate a successful clone
+    def fake_run(args, capture_output=False, text=False, timeout=None, env=None):
+        dest = args[-1]
+        os.makedirs(dest, exist_ok=True)
+        with open(os.path.join(dest, "README.md"), "w") as f:
+            f.write("# Hello World\n")
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+    monkeypatch.setattr("subprocess.run", fake_run)
     cloned_path = cloner.clone(repo_url)
     assert os.path.exists(cloned_path)
     assert os.path.isfile(os.path.join(cloned_path, "README.md"))

@@ -8,10 +8,7 @@ logger = logging.getLogger("repopulse.worker")
 
 
 def run_worker():
-    """Example worker loop that writes a sample LOC metric to InfluxDB every 5s.
-
-    Replace the payload construction with your real metric collection logic.
-    """
+    """Background loop that writes sample LOC metrics to InfluxDB every 5 seconds."""
     while True:
         payload = {
             "repo_id": "local-000",
