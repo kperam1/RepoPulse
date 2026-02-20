@@ -19,6 +19,7 @@ ENV/
 .env
 *.env
 .env.*
+!.env.example
 
 # ── Testing / Coverage ──────────────────────────────────────────────────────
 .pytest_cache/

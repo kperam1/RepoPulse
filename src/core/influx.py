@@ -10,7 +10,7 @@ _client: Optional[InfluxDBClient] = None
 
 
 def get_client() -> InfluxDBClient:
-    """Return a singleton InfluxDBClient configured from env vars."""
+    """Return a singleton InfluxDB client."""
     global _client
     if _client is None:
         if not Config.INFLUX_TOKEN:
@@ -20,29 +20,26 @@ def get_client() -> InfluxDBClient:
 
 
 def write_loc_metric(loc_metric: dict) -> None:
-    """
-    Write a LOC metric point to the configured bucket.
-
-    loc_metric: dict containing keys similar to LOCMetrics model.
-    """
+    """Write a single LOC metric point to InfluxDB."""
     client = get_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
     p = Point("loc_metrics")
     # tags
-    for tag in ("repo_id", "repo_name", "branch", "language", "granularity", "project_name", "package_name", "file_path"):
+    for tag in ("repo_id", "repo_name", "branch", "language", "granularity",
+                "project_name", "package_name", "file_path"):
         v = loc_metric.get(tag)
         if v is not None:
             p = p.tag(tag, str(v))
 
-    # fields (numeric)
+    # fields
     try:
         p = p.field("total_loc", int(loc_metric.get("total_loc", 0)))
         p = p.field("code_loc", int(loc_metric.get("code_loc", 0)))
         p = p.field("comment_loc", int(loc_metric.get("comment_loc", 0)))
         p = p.field("blank_loc", int(loc_metric.get("blank_loc", 0)))
     except Exception:
-        # ensure numeric conversion failure doesn't crash the writer
+        # fallback if values aren't numeric
         p = p.field("total_loc", 0).field("code_loc", 0).field("comment_loc", 0).field("blank_loc", 0)
 
     # timestamp

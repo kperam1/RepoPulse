@@ -7,7 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 GITHUB_URL_PATTERN = re.compile(
-    r"^https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/?$"
+    r"^https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(\.git)?/?$"
 )
 
 
@@ -93,7 +93,7 @@ class ErrorResponse(BaseModel):
     detail: str
 
 
-# ── LOC Metric Models ────────────────────────────────────────────────────────
+# LOC response models
 
 
 class FileLOCResponse(BaseModel):
@@ -139,5 +139,22 @@ class LOCRequest(BaseModel):
             raise ValueError("repo_path must be an absolute path starting with /")
         if ".." in v:
             raise ValueError("repo_path must not contain '..'")
+        return v
+
+
+class AnalyzeRequest(BaseModel):
+    """Request body for POST /analyze — clone a public repo and compute metrics."""
+    repo_url: str = Field(..., description="Public GitHub HTTPS URL to analyse")
+
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("repo_url cannot be empty")
+        if not GITHUB_URL_PATTERN.match(v):
+            raise ValueError(
+                "repo_url must be a valid GitHub URL (e.g. https://github.com/owner/repo)"
+            )
         return v
 

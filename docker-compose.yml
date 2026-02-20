@@ -19,8 +19,6 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
 
   influxdb:
-    # Use a released 2.x tag; 2.9 may not be available on all registries.
-    # Using 2.8 which is commonly available. Change if you prefer a different version.
     image: influxdb:2.8
     container_name: repopulse-influx
     ports:
