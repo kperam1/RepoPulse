@@ -19,6 +19,7 @@ from src.api.models import (
     FileLOCResponse,
 )
 from src.metrics.loc import count_loc_in_directory
+from src.core.influx import get_client
 
 logger = logging.getLogger("repopulse")
 
@@ -39,6 +40,19 @@ async def health_check():
         service="RepoPulse API",
         version="1.0.0",
     )
+
+
+@router.get("/health/db")
+async def db_health():
+    """Check connectivity to InfluxDB using the client health endpoint."""
+    try:
+        client = get_client()
+        health = client.health()
+        status = getattr(health, "status", None) or (health.get("status") if isinstance(health, dict) else "unknown")
+        message = getattr(health, "message", None) or (health.get("message") if isinstance(health, dict) else "")
+        return {"status": status, "message": message}
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "detail": str(e)})
 
 
 @router.post("/jobs", response_model=JobResponse, status_code=201)

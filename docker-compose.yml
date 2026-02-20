@@ -8,4 +8,38 @@ services:
       - .:/app
     environment:
       - PYTHONPATH=/app
+      - INFLUX_URL=http://influxdb:8086
+      - INFLUX_TOKEN=${INFLUX_INIT_TOKEN}
+      - INFLUX_ORG=${INFLUX_ORG}
+      - INFLUX_BUCKET=${INFLUX_BUCKET}
+    depends_on:
+      - influxdb
+    networks:
+      - repopulse-net
     command: uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
+
+  influxdb:
+    # Use a released 2.x tag; 2.9 may not be available on all registries.
+    # Using 2.8 which is commonly available. Change if you prefer a different version.
+    image: influxdb:2.8
+    container_name: repopulse-influx
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUX_INIT_USERNAME}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUX_INIT_PASSWORD}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUX_ORG}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUX_BUCKET}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUX_INIT_TOKEN}
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    networks:
+      - repopulse-net
+
+volumes:
+  influxdb-data:
+
+networks:
+  repopulse-net:
+    driver: bridge
