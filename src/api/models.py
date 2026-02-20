@@ -65,6 +65,24 @@ class JobResponse(BaseModel):
     message: str
 
 
+
+# LOC Metrics Schema
+class LOCMetrics(BaseModel):
+    repo_id: str = Field(..., description="Unique identifier for the repository")
+    repo_name: str = Field(..., description="Repository name")
+    branch: str = Field(..., description="Branch name")
+    commit_hash: str = Field(..., description="Commit hash")
+    language: str = Field(..., description="Programming language")
+    granularity: str = Field(..., description="Granularity of the metric: 'project', 'package', or 'file'")
+    project_name: Optional[str] = Field(None, description="Project name if applicable")
+    package_name: Optional[str] = Field(None, description="Package name if applicable")
+    file_path: Optional[str] = Field(None, description="File path if applicable")
+    total_loc: int = Field(..., description="Total lines of code")
+    code_loc: int = Field(..., description="Lines of code (excluding comments and blanks)")
+    comment_loc: int = Field(..., description="Lines of comments")
+    blank_loc: int = Field(..., description="Blank lines")
+    collected_at: str = Field(..., description="Timestamp when metrics were collected (ISO format)")
+
 class HealthResponse(BaseModel):
     status: str
     service: str
