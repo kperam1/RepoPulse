@@ -44,71 +44,205 @@ Make sure the following are installed on your system:
    
 Check if installed:
 
-git --version
+# RepoPulse
 
-If not installed:
+## What does RepoPulse do?
 
-Mac (Homebrew):
+- Lets you ask for stats about your GitHub repos
+- Runs in Docker, so you don't need to set up a bunch of stuff
+- Has Prometheus metrics
+- You can change settings with environment variables
+- Comes with tests (pytest)
 
-brew install git
+## What do you need?
 
-Windows:
+- [Git](https://git-scm.com/)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose)
+- Python 3.8+ and [pip](https://pip.pypa.io/en/stable/) (for development)
 
-Download from: https://git-scm.com/download/win
+## Quick Start — Automated Build (Recommended)
 
-Linux:
+The build scripts do everything for you! They check if you have the right tools, install stuff, build the containers, and run tests. You don't need an IDE.
 
-sudo apt install git
+### Linux / macOS
 
-2. Docker Desktop (includes Docker Compose)
-   
-Required to build and run containers.
-
-Check if installed:
-
-docker --version
-
-docker compose version
-
-If not installed:
-
-Mac:
-https://docs.docker.com/desktop/install/mac-install/
-
-Windows:
-https://docs.docker.com/desktop/install/windows-install/
-
-Linux:
-https://docs.docker.com/desktop/install/linux-install/
-
-After installation, make sure Docker Desktop is running.
-
-Clone the Repository
-
+```sh
 git clone https://github.com/kperam1/RepoPulse.git
-
 cd RepoPulse
+chmod +x build.sh
+./build.sh
+```
 
-Build the Project
+### Windows
 
-docker compose build
+```sh
+git clone https://github.com/kperam1/RepoPulse.git
+cd RepoPulse
+build.bat
+```
 
-Run the Project
+### Build Script Options
 
-docker compose up
+| Command / Flag      | What it does                                 |
+|--------------------|----------------------------------------------|
+| (no args)          | Full build + test + start the app             |
+| stop               | Stop all running containers                   |
+| restart            | Stop, rebuild, test, and start                |
+| --skip-tests       | Build and start, skip tests                   |
+| -h / --help        | Show usage info                              |
 
-Access the API
+#### Examples
 
-Open in browser:
+```sh
+# Linux / macOS
+./build.sh                # build, test, and start
+./build.sh --skip-tests   # build and start (no tests)
+./build.sh stop           # stop the running app
+./build.sh restart        # stop → rebuild → test → start
 
-http://localhost:8080/
+# Windows
+build.bat                 REM build, test, and start
+build.bat --skip-tests    REM build and start (no tests)
+build.bat stop            REM stop the running app
+build.bat restart         REM stop → rebuild → test → start
+```
 
-Or test using curl:
+### What the build scripts do
 
-curl http://localhost:8080/
+- Check if git, docker, and docker compose are installed and Docker is running
+- Make sure requirements.txt exists (dependencies are installed inside the Docker image)
+- Build all containers from scratch
+- Run tests with pytest inside the container (unless you skip tests)
+- Start the app in the background
 
-Stop the Project
+## Manual Steps (if you want)
 
-docker compose down
+1. Clone the repository:
+   ```sh
+   git clone https://github.com/kperam1/RepoPulse.git
+   cd RepoPulse
+   ```
+2. Build the Docker image:
+   ```sh
+   docker compose build
+   ```
+3. Run the service:
+   ```sh
+   docker compose up
+   ```
+4. Access the API:
+   - Open [http://localhost:8080/](http://localhost:8080/) in your browser
+   - Or test with curl:
+     ```sh
+     curl http://localhost:8080/
+     ```
+5. Stop the service:
+   ```sh
+   docker compose down
+   ```
+
+## API Docs
+
+- Interactive docs: [http://localhost:8080/docs](http://localhost:8080/docs)
+- ReDoc: [http://localhost:8080/redoc](http://localhost:8080/redoc)
+
+### Endpoints
+
+| Method | Path             | Description                          |
+|--------|------------------|--------------------------------------|
+| GET    | `/`              | Welcome message                      |
+| GET    | `/health`        | Health check                         |
+| POST   | `/jobs`          | Submit a repository analysis job     |
+| POST   | `/metrics/loc`   | Compute Lines of Code metrics        |
+
+### LOC Metric (`POST /metrics/loc`)
+
+Compute Lines of Code for a local repository. Supports `.java`, `.py`, and `.ts` files.
+
+**Request:**
+
+```json
+{
+  "repo_path": "/absolute/path/to/repo"
+}
+```
+
+**Response:**
+
+```json
+{
+  "project_root": "/absolute/path/to/repo",
+  "total_loc": 42,
+  "total_files": 3,
+  "total_blank_lines": 8,
+  "total_excluded_lines": 6,
+  "packages": [
+    {
+      "package": "src/com/example",
+      "loc": 30,
+      "file_count": 2,
+      "files": [...]
+    }
+  ],
+  "files": [
+    {
+      "path": "src/com/example/Calculator.java",
+      "total_lines": 27,
+      "loc": 15,
+      "blank_lines": 4,
+      "excluded_lines": 8
+    }
+  ]
+}
+```
+
+**Exclusion rules:**
+- Blank lines (empty or only newline)
+- Lines with only whitespace
+- Lines with only curly braces `{` or `}`
+
+## Project Structure
+
+```
+RepoPulse/
+├── src/
+│   ├── main.py           # FastAPI app entrypoint
+│   ├── api/              # API routes and models
+│   ├── core/             # Core config and utilities
+│   ├── metrics/          # Metric computation modules
+│   │   └── loc.py        # Lines of Code metric
+│   └── worker/           # Background worker logic
+├── tests/                # Pytest test cases
+│   ├── sample_files/     # Sample Java/Python/TS files for testing
+│   ├── test_main.py      # API & health check tests
+│   └── test_loc.py       # LOC metric tests
+├── requirements.txt      # Python dependencies
+├── Dockerfile            # Docker build file
+├── docker-compose.yml    # Multi-container setup
+└── README.md             # Project documentation
+```
+
+## Development
+
+1. Install Python 3.8+ and [pip](https://pip.pypa.io/en/stable/)
+2. Install dependencies:
+   ```sh
+   pip install -r requirements.txt
+   ```
+3. Run tests:
+   ```sh
+   pytest
+   ```
+
+## Configuration
+
+Edit `src/core/config.py` to change environment variables and settings if you want.
+
+Running Tests (Local)
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m pytest
 
 
