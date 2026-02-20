@@ -261,6 +261,10 @@ INFLUX_INIT_TOKEN=devtoken12345
 INFLUX_RETENTION_DAYS=90
 INFLUX_URL=http://influxdb:8086
 INFLUX_TOKEN=devtoken12345
+
+# Grafana
+GF_ADMIN_USER=admin
+GF_ADMIN_PASSWORD=admin
 ```
 
 How it works:
@@ -278,5 +282,66 @@ Retention and production:
 - Bucket retention is configurable via `INFLUX_RETENTION_DAYS` (defaults to 90 days).
 
 If you want, I can also add an integration pytest that writes and queries a point in the running InfluxDB instance.
+
+## Grafana Dashboard (visualization)
+
+Grafana is included in the Docker Compose stack and is **auto-provisioned** with the InfluxDB datasource and the RepoPulse LOC Metrics dashboard on first start.
+
+### Quick start
+
+```sh
+docker compose up -d
+```
+
+Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+| Setting      | Default value |
+|-------------|---------------|
+| **URL**     | `http://localhost:3000` |
+| **Username** | `admin` (set via `GF_ADMIN_USER` in `.env`) |
+| **Password** | `admin` (set via `GF_ADMIN_PASSWORD` in `.env`) |
+
+### What's provisioned automatically
+
+- **Datasource** — InfluxDB (Flux) pointing at `http://influxdb:8086` with the org, bucket, and token from `.env`.
+- **Dashboard** — *RepoPulse – LOC Metrics* is loaded from `monitoring/dashboards/loc-metrics.json`.
+
+### Verifying the setup
+
+1. Navigate to **Connections → Data sources → InfluxDB** and click **Test**. You should see *"datasource is working"*.
+2. Navigate to **Dashboards** — the *RepoPulse – LOC Metrics* dashboard should be listed.
+3. Via CLI:
+   ```sh
+   # Health check
+   curl -s http://localhost:3000/api/health
+
+   # List datasources
+   curl -s -u admin:admin http://localhost:3000/api/datasources
+
+   # Test datasource connection
+   curl -s -u admin:admin -X POST http://localhost:3000/api/datasources/1/health
+   ```
+
+### Container details
+
+| Container            | Image                  | Port   | Purpose              |
+|---------------------|------------------------|--------|----------------------|
+| `repopulse-grafana` | `grafana/grafana:11.5.1` | `3000` | Dashboards & visualization |
+| `repopulse-influx`  | `influxdb:2.8`          | `8086` | Time-series storage   |
+| `repopulse-dev`     | (local build)           | `8080` | RepoPulse API         |
+
+### File layout
+
+```
+monitoring/
+├── RepoPulse - Grafana - Dashboard.json   # original export
+├── dashboards/
+│   └── loc-metrics.json                   # provisioned into Grafana
+└── provisioning/
+    ├── dashboards/
+    │   └── dashboards.yml                 # dashboard provider config
+    └── datasources/
+        └── influxdb.yml                   # InfluxDB datasource config
+```
 
 
