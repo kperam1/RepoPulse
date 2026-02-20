@@ -246,3 +246,37 @@ pip install -r requirements.txt
 python -m pytest
 
 
+## InfluxDB Integration (time-series storage)
+
+This project can write LOC metrics into an InfluxDB v2 instance. The compose setup can include an `influxdb` service and the API/worker are configured to connect to it when the following environment variables are provided.
+
+Create a `.env` file (don't commit real secrets) with values like:
+
+```
+INFLUX_INIT_USERNAME=repopulse
+INFLUX_INIT_PASSWORD=change_me_locally
+INFLUX_ORG=RepoPulseOrg
+INFLUX_BUCKET=repopulse_metrics
+INFLUX_INIT_TOKEN=devtoken12345
+INFLUX_RETENTION_DAYS=90
+INFLUX_URL=http://influxdb:8086
+INFLUX_TOKEN=devtoken12345
+```
+
+How it works:
+- If you enable the `influxdb` service in `docker-compose.yml`, the container is initialized with the org, bucket and admin token (for development only).
+- The `api` and `worker` services use `INFLUX_URL` and `INFLUX_TOKEN` to connect and write LOC metrics.
+- The metrics measurement is `loc_metrics` and fields include `total_loc`, `code_loc`, `comment_loc`, `blank_loc`. Tags include `repo_name`, `repo_id`, `branch`, `language`, and `granularity`.
+
+Health & verification:
+- Start the stack: `docker compose up -d influxdb api`
+- Visit the Influx UI at `http://localhost:8086` and log in with the init token.
+- The API exposes `/health/db` which returns the InfluxDB health status.
+
+Retention and production:
+- For production, use Docker secrets for `INFLUX_INIT_TOKEN` / `INFLUX_INIT_PASSWORD` and avoid committing `.env` files.
+- Bucket retention is configurable via `INFLUX_RETENTION_DAYS` (defaults to 90 days).
+
+If you want, I can also add an integration pytest that writes and queries a point in the running InfluxDB instance.
+
+
