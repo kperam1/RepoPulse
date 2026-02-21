@@ -132,5 +132,6 @@ info "Health check:       http://localhost:8080/health"
 
 info "InfluxDB is running at: http://localhost:8086"
 info "Grafana Dashboard: http://localhost:3000"
+info "Refer to .env file for username and password of Grafana and InfluxDB."
 
 info "To stop:            ./build.sh stop"
