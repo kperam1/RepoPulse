@@ -129,4 +129,8 @@ success "============================================="
 echo ""
 info "API is running at:  http://localhost:8080/"
 info "Health check:       http://localhost:8080/health"
+
+info "InfluxDB is running at: http://localhost:8086"
+info "Grafana Dashboard: http://localhost:3000"
+
 info "To stop:            ./build.sh stop"
