@@ -115,6 +115,8 @@ echo ======================================
 echo RepoPulse is running 🚀
 echo API: http://localhost:8080
 echo Health: http://localhost:8080/health
+echo Influx-DB: http://localhost:8086
+echo Grafana Dashboard: http://localhost:3000
 echo ======================================
 
 endlocal

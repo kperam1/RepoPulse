@@ -11,17 +11,24 @@ A tool that analyzes GitHub repositories and computes Lines of Code (LOC) metric
 
 1. Clone the repo and create a `.env` file:
    ```sh
-   git clone https://github.com/kperam1/RepoPulse.git
-   cd RepoPulse
-   cp .env.example .env
+    git clone https://github.com/kperam1/RepoPulse.git
+    cd RepoPulse
+    # Unix / macOS
+    cp .env.example .env
+    # Windows PowerShell
+    Copy-Item .env.example .env
+    # Windows CMD
+    copy .env.example .env
    ```
 
 2. Build and run:
-   ```sh
-   chmod +x build.sh
-   ./build.sh
-   ```
-   On Windows use `build.bat` instead.
+    ```sh
+    # Unix / macOS
+    chmod +x build.sh
+    ./build.sh
+    # Windows (PowerShell or CMD)
+    .\build.bat
+    ```
 
 3. The build script will:
    - Check that Git and Docker are installed
@@ -55,10 +62,28 @@ Once running, the API is at **http://localhost:8080**. Interactive docs at [http
 
 This is the main endpoint. Give it a public GitHub URL and it clones the repo, counts lines of code, writes the results to InfluxDB, and returns everything.
 
+**Linux / macOS:**
+
 ```sh
 curl -X POST http://localhost:8080/analyze \
   -H "Content-Type: application/json" \
   -d '{"repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git"}'
+```
+
+**Windows PowerShell (recommended):**
+
+```powershell
+$body = @{
+  repo_url = "https://github.com/SimplifyJobs/Summer2026-Internships.git"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri http://localhost:8080/analyze -Method POST -ContentType "application/json" -Body $body
+```
+
+**Windows CMD:**
+
+```cmd
+curl.exe -X POST http://localhost:8080/analyze -H "Content-Type: application/json" -d "{\"repo_url\": \"https://github.com/SimplifyJobs/Summer2026-Internships.git\"}"
 ```
 
 Example response (trimmed):
@@ -92,7 +117,7 @@ Grafana is auto-provisioned with the InfluxDB datasource and a LOC metrics dashb
 
 - **URL:** http://localhost:3000
 - **Username:** `admin`
-- **Password:** `repopulse` (configurable in `.env`)
+- **Password:** `admin` 
 
 The dashboard shows:
 - Total LOC (stat panel)
@@ -100,14 +125,6 @@ The dashboard shows:
 - LOC by file — top 10 (bar chart)
 - LOC by package (bar chart)
 - LOC over time (time series)
-
-## Environment Variables
-
-All config is in `.env`. Copy from the example:
-
-```sh
-cp .env.example .env
-```
 
 Key variables:
 
@@ -118,7 +135,7 @@ Key variables:
 | `INFLUX_BUCKET`       | `repopulse_metrics`| InfluxDB bucket               |
 | `INFLUX_RETENTION_DAYS`| `90`              | Metric retention (days)       |
 | `GF_ADMIN_USER`       | `admin`            | Grafana admin username        |
-| `GF_ADMIN_PASSWORD`   | `repopulse`        | Grafana admin password        |
+| `GF_ADMIN_PASSWORD`   | `admin`            | Grafana admin password        |
 
 ## Project Structure
 
@@ -151,18 +168,36 @@ RepoPulse/
 ## Running Tests Locally
 
 ```sh
+# Create venv (Unix/macOS and Windows)
 python3 -m venv .venv
+
+# Unix / macOS
 source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# Windows CMD
+.venv\Scripts\activate
+
 pip install -r requirements.txt
 pytest
 ```
 
-Or just run `./build.sh` — it runs tests inside Docker automatically.
+If PowerShell blocks script activation, run:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Or just run `./build.sh` (or `.
+build.bat` on Windows) — the build script runs tests inside Docker automatically.
 
 ## Services
 
-| Container           | Image                    | Port   | What it does            |
-|---------------------|--------------------------|--------|-------------------------|
-| `repopulse-dev`     | local build              | `8080` | FastAPI backend         |
-| `repopulse-influx`  | `influxdb:2.8`           | `8086` | Time-series DB          |
-| `repopulse-grafana` | `grafana/grafana:11.5.1` | `3000` | Dashboard visualization |
+
+| Container           | Image                    | URL                      | What it does            |
+|---------------------|--------------------------|--------------------------|-------------------------|
+| `repopulse-dev`     | local build              | `http://localhost:8080`  | FastAPI backend         |
+| `repopulse-influx`  | `influxdb:2.8`           | `http://localhost:8086`  | Time-series DB          |
+| `repopulse-grafana` | `grafana/grafana:11.5.1` | `http://localhost:3000`  | Dashboard visualization |
