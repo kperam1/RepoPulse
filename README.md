@@ -19,6 +19,8 @@ A tool that analyzes GitHub repositories and computes Lines of Code (LOC) metric
     Copy-Item .env.example .env
     # Windows CMD
     copy .env.example .env
+
+    # Refer to .env file for username and password of Grafana and Influx-DB
    ```
 
 2. Build and run:
