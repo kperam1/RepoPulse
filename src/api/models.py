@@ -12,7 +12,9 @@ GITHUB_URL_PATTERN = re.compile(
 
 
 class JobStatus(str, Enum):
+    QUEUED = "queued"
     PENDING = "pending"
+    PROCESSING = "processing"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -64,6 +66,29 @@ class JobResponse(BaseModel):
     created_at: str
     message: str
 
+
+class JobDetailResponse(BaseModel):
+    """Full job status including results (returned by GET /jobs/{job_id})."""
+    job_id: str
+    status: str
+    repo_url: Optional[str] = None
+    local_path: Optional[str] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class WorkerHealthResponse(BaseModel):
+    """Worker pool health info."""
+    pool_size: int
+    active_workers: int
+    queued_jobs: int
+    processing_jobs: int
+    completed_jobs: int
+    failed_jobs: int
+    total_jobs: int
 
 
 # LOC Metrics Schema

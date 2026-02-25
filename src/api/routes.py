@@ -11,6 +11,7 @@ from src.api.models import (
     AnalyzeRequest,
     ErrorResponse,
     HealthResponse,
+    JobDetailResponse,
     JobRequest,
     JobResponse,
     JobStatus,
@@ -18,6 +19,7 @@ from src.api.models import (
     ProjectLOCResponse,
     PackageLOCResponse,
     FileLOCResponse,
+    WorkerHealthResponse,
 )
 from src.metrics.loc import count_loc_in_directory
 from src.core.influx import get_client, write_loc_metric
@@ -26,8 +28,6 @@ from src.core.git_clone import GitRepoCloner, GitCloneError
 logger = logging.getLogger("repopulse")
 
 router = APIRouter()
-
-jobs_store: dict[str, JobResponse] = {}
 
 
 @router.get("/")
@@ -59,6 +59,7 @@ async def db_health():
 
 @router.post("/jobs", response_model=JobResponse, status_code=201)
 async def create_job(request: Request):
+    """Submit a repo analysis job to the worker pool."""
     body = await request.json()
     logger.info(f"Incoming job request: {body}")
 
@@ -74,21 +75,54 @@ async def create_job(request: Request):
         )
 
     job_id = str(uuid.uuid4())
+
+    # submit to the worker pool
+    pool = request.app.state.worker_pool
+    try:
+        pool.submit(
+            job_id=job_id,
+            repo_url=job_request.repo_url,
+            local_path=job_request.local_path,
+        )
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+
     created_at = datetime.now(timezone.utc).isoformat()
 
     job = JobResponse(
         job_id=job_id,
-        status=JobStatus.PENDING,
+        status=JobStatus.QUEUED,
         repo_url=job_request.repo_url,
         local_path=job_request.local_path,
         created_at=created_at,
-        message="Job submitted successfully",
+        message="Job queued for processing",
     )
-
-    jobs_store[job_id] = job
-    logger.info(f"Job created: {job_id}")
-
+    logger.info(f"Job queued: {job_id}")
     return job
+
+
+@router.get("/jobs/{job_id}", response_model=JobDetailResponse)
+async def get_job(job_id: str, request: Request):
+    """Get the current status and result of a job."""
+    pool = request.app.state.worker_pool
+    record = pool.get_job(job_id)
+    if record is None:
+        return JSONResponse(status_code=404, content={"detail": "Job not found"})
+    return JobDetailResponse(**record.to_dict())
+
+
+@router.get("/jobs", response_model=list[JobDetailResponse])
+async def list_jobs(request: Request):
+    """List all jobs with their statuses."""
+    pool = request.app.state.worker_pool
+    return [JobDetailResponse(**j) for j in pool.list_jobs()]
+
+
+@router.get("/workers/health", response_model=WorkerHealthResponse)
+async def workers_health(request: Request):
+    """Return worker pool health: pool size, active/queued/completed counts."""
+    pool = request.app.state.worker_pool
+    return WorkerHealthResponse(**pool.health())
 
 
 # --- LOC Metric Endpoint ---

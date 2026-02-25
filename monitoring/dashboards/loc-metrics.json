@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Grafana dashboard for RepoPulse showing Lines of Code metrics including total LOC, LOC by file, package, and time-series visualization.\n",
+  "description": "RepoPulse LOC metrics — supports multiple repos with a Repository dropdown filter.\n",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -84,7 +84,7 @@
             "type": "influxdb",
             "uid": "influxdb"
           },
-          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"project\")\n  |> filter(fn: (r) => r._field == \"total_loc\")\n  |> last()\n  |> yield(name: \"total_loc\")",
+          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"project\")\n  |> filter(fn: (r) => r._field == \"total_loc\")\n  |> filter(fn: (r) => r.repo_name =~ /^${repo_name:regex}$/)\n  |> group(columns: [\"repo_name\"])\n  |> last()\n  |> group()\n  |> sum()\n  |> yield(name: \"total_loc\")",
           "refId": "A"
         }
       ],
@@ -140,7 +140,7 @@
             "type": "influxdb",
             "uid": "influxdb"
           },
-          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"project\")\n  |> filter(fn: (r) => r._field == \"comment_loc\")\n  |> last()\n  |> yield(name: \"comment_loc\")",
+          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"project\")\n  |> filter(fn: (r) => r._field == \"comment_loc\")\n  |> filter(fn: (r) => r.repo_name =~ /^${repo_name:regex}$/)\n  |> group(columns: [\"repo_name\"])\n  |> last()\n  |> group()\n  |> sum()\n  |> yield(name: \"comment_loc\")",
           "refId": "A"
         }
       ],
@@ -196,7 +196,7 @@
             "type": "influxdb",
             "uid": "influxdb"
           },
-          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"project\")\n  |> filter(fn: (r) => r._field == \"blank_loc\")\n  |> last()\n  |> yield(name: \"blank_loc\")",
+          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"project\")\n  |> filter(fn: (r) => r._field == \"blank_loc\")\n  |> filter(fn: (r) => r.repo_name =~ /^${repo_name:regex}$/)\n  |> group(columns: [\"repo_name\"])\n  |> last()\n  |> group()\n  |> sum()\n  |> yield(name: \"blank_loc\")",
           "refId": "A"
         }
       ],
@@ -250,7 +250,7 @@
             "type": "influxdb",
             "uid": "influxdb"
           },
-          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"file\")\n  |> filter(fn: (r) => r._field == \"total_loc\")\n  |> group(columns: [\"file_path\"])\n  |> last()\n  |> group()\n  |> top(n: 10, columns: [\"_value\"])\n  |> yield(name: \"loc_by_file\")",
+          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"file\")\n  |> filter(fn: (r) => r._field == \"total_loc\")\n  |> filter(fn: (r) => r.repo_name =~ /^${repo_name:regex}$/)\n  |> group(columns: [\"file_path\", \"repo_name\"])\n  |> last()\n  |> group()\n  |> top(n: 10, columns: [\"_value\"])\n  |> yield(name: \"loc_by_file\")",
           "refId": "A"
         }
       ],
@@ -304,7 +304,7 @@
             "type": "influxdb",
             "uid": "influxdb"
           },
-          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"package\")\n  |> filter(fn: (r) => r._field == \"total_loc\")\n  |> group(columns: [\"package_name\"])\n  |> last()\n  |> yield(name: \"loc_by_package\")",
+          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"package\")\n  |> filter(fn: (r) => r._field == \"total_loc\")\n  |> filter(fn: (r) => r.repo_name =~ /^${repo_name:regex}$/)\n  |> group(columns: [\"package_name\", \"repo_name\"])\n  |> last()\n  |> group()\n  |> yield(name: \"loc_by_package\")",
           "refId": "A"
         }
       ],
@@ -352,7 +352,7 @@
             "type": "influxdb",
             "uid": "influxdb"
           },
-          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"project\")\n  |> filter(fn: (r) => r._field == \"total_loc\")\n  |> yield(name: \"loc_over_time\")",
+          "query": "from(bucket:\"repopulse_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"loc_metrics\")\n  |> filter(fn: (r) => r.granularity == \"project\")\n  |> filter(fn: (r) => r._field == \"total_loc\")\n  |> filter(fn: (r) => r.repo_name =~ /^${repo_name:regex}$/)\n  |> group(columns: [\"repo_name\"])\n  |> yield(name: \"loc_over_time\")",
           "refId": "A"
         }
       ],
@@ -364,7 +364,23 @@
   "schemaVersion": 42,
   "tags": [],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "definition": "",
+        "includeAll": true,
+        "multi": true,
+        "name": "repo_name",
+        "label": "Repository",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"repopulse_metrics\", tag: \"repo_name\")",
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",
@@ -374,5 +390,5 @@
   "timezone": "browser",
   "title": "RepoPulse - LOC Metrics",
   "uid": "hpmsr89",
-  "version": 2
+  "version": 3
 }

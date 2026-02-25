@@ -1,8 +1,16 @@
 import pytest
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from src.main import app
 
 client = TestClient(app)
+
+
+# Block InfluxDB writes so test jobs don't pollute the real database.
+@pytest.fixture(autouse=True)
+def _no_influx_writes():
+    with patch("src.core.influx.write_loc_metric"):
+        yield
 
 
 def test_read_root():
@@ -27,10 +35,10 @@ def test_create_job_with_repo_url():
     )
     assert response.status_code == 201
     data = response.json()
-    assert data["status"] == "pending"
+    assert data["status"] == "queued"
     assert data["repo_url"] == "https://github.com/kperam1/RepoPulse"
     assert data["local_path"] is None
-    assert data["message"] == "Job submitted successfully"
+    assert data["message"] == "Job queued for processing"
     assert "job_id" in data
     assert "created_at" in data
 
@@ -42,10 +50,10 @@ def test_create_job_with_local_path():
     )
     assert response.status_code == 201
     data = response.json()
-    assert data["status"] == "pending"
+    assert data["status"] == "queued"
     assert data["local_path"] == "/home/user/projects/my-repo"
     assert data["repo_url"] is None
-    assert data["message"] == "Job submitted successfully"
+    assert data["message"] == "Job queued for processing"
 
 
 def test_create_job_missing_fields():

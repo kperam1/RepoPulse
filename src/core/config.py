@@ -21,3 +21,5 @@ class Config:
     INFLUX_ORG = os.getenv("INFLUX_ORG", "RepoPulseOrg")
     INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "repopulse_metrics")
     INFLUX_RETENTION_DAYS = int(os.getenv("INFLUX_RETENTION_DAYS", "90"))
+    # Worker pool
+    WORKER_POOL_SIZE = int(os.getenv("WORKER_POOL_SIZE", "4"))
