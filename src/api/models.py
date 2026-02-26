@@ -172,6 +172,34 @@ class SnapshotQueryRequest(BaseModel):
     end_time: str = Field(..., description="End timestamp")
     granularity: Optional[str] = Field(None, description="Granularity filter")
 
+
+class CommitInfo(BaseModel):
+    """Commit information with timestamp and branch."""
+    commit_hash: str = Field(..., description="Commit hash")
+    branch: str = Field(..., description="Branch name")
+    time: str = Field(..., description="Commit timestamp")
+
+
+class CommitListResponse(BaseModel):
+    """List of commits in a date range."""
+    repo_id: str = Field(..., description="Repository ID")
+    start_time: str = Field(..., description="Range start")
+    end_time: str = Field(..., description="Range end")
+    branch: Optional[str] = Field(None, description="Branch filter")
+    commits: list[CommitInfo] = Field(..., description="Commits")
+    count: int = Field(..., description="Count")
+
+
+class CommitComparisonResponse(BaseModel):
+    """Metrics comparison between two commits."""
+    repo_id: str = Field(..., description="Repository ID")
+    commit1: str = Field(..., description="First commit hash")
+    commit2: str = Field(..., description="Second commit hash")
+    granularity: str = Field(..., description="Granularity level")
+    snapshots_commit1: list[dict] = Field(..., description="Snapshots from commit 1")
+    snapshots_commit2: list[dict] = Field(..., description="Snapshots from commit 2")
+
+
 # LOC Metrics Schema
 class LOCMetrics(BaseModel):
     repo_id: str = Field(..., description="Unique identifier for the repository")

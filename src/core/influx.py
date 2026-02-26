@@ -247,3 +247,66 @@ def query_snapshots_by_commit(
                 "field": record.get_field(),
             })
     return snapshots
+
+
+def query_commits_in_range(
+    repo_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    branch: Optional[str] = None
+) -> list[dict]:
+    """Get all commits with snapshots in a date range."""
+    start_iso = start_time.isoformat()
+    end_iso = end_time.isoformat()
+    
+    branch_filter = f'r.branch == "{branch}" and' if branch else ""
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: {start_iso}, stop: {end_iso})
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => {branch_filter} r._field == "total_loc")
+      |> group(columns: ["commit_hash"])
+      |> sort(columns: ["_time"], desc: true)
+    '''
+    
+    results = query_flux(flux_query)
+    commits = []
+    seen = set()
+    
+    for table in results:
+        for record in table.records:
+            commit = record.values.get("commit_hash")
+            if commit and commit not in seen:
+                commits.append({
+                    "commit_hash": commit,
+                    "repo_id": record.values.get("repo_id"),
+                    "branch": record.values.get("branch"),
+                    "time": record.get_time(),
+                })
+                seen.add(commit)
+    return commits
+
+
+def query_compare_commits(
+    repo_id: str,
+    commit1: str,
+    commit2: str,
+    granularity: str = "project"
+) -> dict:
+    """Compare metrics between two commits at same granularity level."""
+    snap1 = query_snapshots_by_commit(repo_id, commit1)
+    snap2 = query_snapshots_by_commit(repo_id, commit2)
+    
+    snap1_filtered = [s for s in snap1 if s.get("granularity") == granularity]
+    snap2_filtered = [s for s in snap2 if s.get("granularity") == granularity]
+    
+    return {
+        "repo_id": repo_id,
+        "commit1": commit1,
+        "commit2": commit2,
+        "granularity": granularity,
+        "snapshots_commit1": snap1_filtered,
+        "snapshots_commit2": snap2_filtered,
+    }

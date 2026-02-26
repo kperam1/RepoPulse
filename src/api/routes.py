@@ -2,6 +2,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import JSONResponse
@@ -26,6 +27,9 @@ from src.api.models import (
     CommitSnapshotsResponse,
     SnapshotRecord,
     SnapshotData,
+    CommitInfo,
+    CommitListResponse,
+    CommitComparisonResponse,
 )
 from src.metrics.loc import count_loc_in_directory
 from src.core.influx import (
@@ -36,6 +40,8 @@ from src.core.influx import (
     query_latest_snapshot,
     query_snapshot_at_timestamp,
     query_snapshots_by_commit,
+    query_commits_in_range,
+    query_compare_commits,
 )
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
@@ -612,4 +618,74 @@ async def get_snapshots_for_commit(repo_id: str, commit_hash: str):
         )
     except Exception as e:
         logger.error(f"Error querying commit snapshots: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/commits/{repo_id}", response_model=CommitListResponse)
+async def get_commits_in_range(
+    repo_id: str,
+    start_time: str = Query(...),
+    end_time: str = Query(...),
+    branch: Optional[str] = Query(None)
+):
+    try:
+        start = _parse_timestamp(start_time)
+        end = _parse_timestamp(end_time)
+        
+        if not start or not end:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if start >= end:
+            return JSONResponse(status_code=400, content={"detail": "start_time must be before end_time"})
+        
+        commits_data = query_commits_in_range(repo_id, start, end, branch)
+        
+        commits = [
+            CommitInfo(
+                commit_hash=c.get("commit_hash", ""),
+                branch=c.get("branch", ""),
+                time=c["time"].isoformat() if c.get("time") else ""
+            )
+            for c in commits_data
+        ]
+        
+        return CommitListResponse(
+            repo_id=repo_id,
+            start_time=start.isoformat(),
+            end_time=end.isoformat(),
+            branch=branch,
+            commits=commits,
+            count=len(commits)
+        )
+    except Exception as e:
+        logger.error(f"Error querying commits: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/commits/{repo_id}/compare", response_model=CommitComparisonResponse)
+async def compare_commits(
+    repo_id: str,
+    commit1: str = Query(...),
+    commit2: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        comparison = query_compare_commits(repo_id, commit1, commit2, granularity)
+        
+        return CommitComparisonResponse(
+            repo_id=comparison["repo_id"],
+            commit1=comparison["commit1"],
+            commit2=comparison["commit2"],
+            granularity=comparison["granularity"],
+            snapshots_commit1=comparison["snapshots_commit1"],
+            snapshots_commit2=comparison["snapshots_commit2"]
+        )
+    except Exception as e:
+        logger.error(f"Error comparing commits: {e}")
         return JSONResponse(status_code=500, content={"detail": str(e)})
