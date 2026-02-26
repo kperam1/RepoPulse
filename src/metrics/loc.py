@@ -24,6 +24,11 @@ _PY_SINGLE_COMMENT_RE = re.compile(r"^\s*#")             # pure # comment
 _PY_INLINE_COMMENT_RE = re.compile(r".+#")                # code + trailing #
 
 
+# ── Weighting constants ──────────────────────────────────────────────────────
+CODE_WEIGHT = 1.0
+COMMENT_WEIGHT = 0.5
+
+
 @dataclass
 class FileLOC:
     path: str
@@ -32,6 +37,7 @@ class FileLOC:
     blank_lines: int = 0
     excluded_lines: int = 0
     comment_lines: int = 0
+    weighted_loc: float = 0.0
 
 
 @dataclass
@@ -40,6 +46,7 @@ class PackageLOC:
     loc: int = 0
     file_count: int = 0
     comment_lines: int = 0
+    weighted_loc: float = 0.0
     files: list[FileLOC] = field(default_factory=list)
 
 
@@ -51,8 +58,22 @@ class ProjectLOC:
     total_blank_lines: int = 0
     total_excluded_lines: int = 0
     total_comment_lines: int = 0
+    total_weighted_loc: float = 0.0
     packages: list[PackageLOC] = field(default_factory=list)
     files: list[FileLOC] = field(default_factory=list)
+
+
+def calculate_weighted_loc(code_lines: int, comment_lines: int) -> float:
+    """Compute weighted LOC: code counts as 1.0, comments as 0.5.
+
+    The rationale is that comment lines still represent meaningful
+    developer effort (documentation, explanation) but carry less
+    executable complexity than code lines.  The 0.5 weight provides
+    a balanced metric that accounts for both.
+
+    Formula:  weighted_loc = (code_lines × 1.0) + (comment_lines × 0.5)
+    """
+    return (code_lines * CODE_WEIGHT) + (comment_lines * COMMENT_WEIGHT)
 
 
 def is_supported_file(filename: str) -> bool:
@@ -220,6 +241,7 @@ def count_loc_in_content(content: str, language: str = "c-style") -> FileLOC:
         else:
             result.loc += 1
 
+    result.weighted_loc = calculate_weighted_loc(result.loc, result.comment_lines)
     return result
 
 
@@ -269,6 +291,7 @@ def count_loc_in_directory(directory: str) -> ProjectLOC:
             project.total_blank_lines += file_loc.blank_lines
             project.total_excluded_lines += file_loc.excluded_lines
             project.total_comment_lines += file_loc.comment_lines
+            project.total_weighted_loc += file_loc.weighted_loc
 
             pkg_key = rel_dir if rel_dir != "." else "(root)"
             if pkg_key not in package_map:
@@ -276,6 +299,7 @@ def count_loc_in_directory(directory: str) -> ProjectLOC:
             package_map[pkg_key].loc += file_loc.loc
             package_map[pkg_key].file_count += 1
             package_map[pkg_key].comment_lines += file_loc.comment_lines
+            package_map[pkg_key].weighted_loc += file_loc.weighted_loc
             package_map[pkg_key].files.append(file_loc)
 
     project.packages = sorted(package_map.values(), key=lambda p: p.package)

@@ -128,6 +128,7 @@ class FileLOCResponse(BaseModel):
     blank_lines: int
     excluded_lines: int
     comment_lines: int
+    weighted_loc: float
 
 
 class PackageLOCResponse(BaseModel):
@@ -135,6 +136,7 @@ class PackageLOCResponse(BaseModel):
     loc: int
     file_count: int
     comment_lines: int
+    weighted_loc: float
     files: list[FileLOCResponse]
 
 
@@ -145,6 +147,7 @@ class ProjectLOCResponse(BaseModel):
     total_blank_lines: int
     total_excluded_lines: int
     total_comment_lines: int
+    total_weighted_loc: float
     packages: list[PackageLOCResponse]
     files: list[FileLOCResponse]
 
