@@ -1,4 +1,8 @@
-from src.api.models import LOCMetrics, TimeSeriesMetricSnapshot, SnapshotRecord, SnapshotData
+from src.api.models import (
+    LOCMetrics, TimeSeriesMetricSnapshot, SnapshotRecord, SnapshotData,
+    CommitInfo, CommitListResponse, CommitComparisonResponse,
+    LocTrendResponse, TrendPoint, BranchMetrics, BranchMetricsResponse, LocChangeResponse
+)
 from datetime import datetime
 import pytest
 from unittest.mock import patch, MagicMock
@@ -210,3 +214,249 @@ def test_get_snapshots_for_commit_endpoint(mock_query):
     assert data["repo_id"] == "test-repo"
     assert data["commit_hash"] == "abc123"
     assert data["count"] == 2
+
+
+@patch("src.api.routes.query_commits_in_range")
+def test_get_commits_in_range_endpoint(mock_query):
+    mock_query.return_value = [
+        {
+            "commit_hash": "hash1",
+            "repo_id": "test-repo",
+            "branch": "main",
+            "time": datetime.fromisoformat("2026-02-20T10:00:00+00:00"),
+        },
+        {
+            "commit_hash": "hash2",
+            "repo_id": "test-repo",
+            "branch": "develop",
+            "time": datetime.fromisoformat("2026-02-25T19:00:00+00:00"),
+        }
+    ]
+    
+    response = client.get(
+        "/metrics/timeseries/commits/test-repo?"
+        "start_time=2026-02-20T00:00:00Z&end_time=2026-02-26T00:00:00Z&branch=main"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["repo_id"] == "test-repo"
+    assert data["count"] == 2
+    assert data["commits"][0]["commit_hash"] == "hash1"
+
+
+@patch("src.api.routes.query_compare_commits")
+def test_compare_commits_endpoint(mock_query):
+    mock_query.return_value = {
+        "repo_id": "test-repo",
+        "commit1": "hash1",
+        "commit2": "hash2",
+        "granularity": "project",
+        "snapshots_commit1": [{"value": 100}],
+        "snapshots_commit2": [{"value": 120}],
+    }
+    
+    response = client.get(
+        "/metrics/timeseries/commits/test-repo/compare?"
+        "commit1=hash1&commit2=hash2&granularity=project"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["repo_id"] == "test-repo"
+    assert data["commit1"] == "hash1"
+    assert data["commit2"] == "hash2"
+    assert data["granularity"] == "project"
+
+
+@patch("src.api.routes.query_loc_trend")
+def test_get_loc_trend_endpoint(mock_query):
+    mock_query.return_value = [
+        {
+            "time": datetime.fromisoformat("2026-02-20T10:00:00+00:00"),
+            "repo_id": "test-repo",
+            "total_loc": 1000,
+            "granularity": "project",
+        },
+        {
+            "time": datetime.fromisoformat("2026-02-25T19:00:00+00:00"),
+            "repo_id": "test-repo",
+            "total_loc": 1200,
+            "granularity": "project",
+        }
+    ]
+    
+    response = client.get(
+        "/metrics/timeseries/trend/test-repo?"
+        "start_time=2026-02-20T00:00:00Z&end_time=2026-02-26T00:00:00Z&granularity=project"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["repo_id"] == "test-repo"
+    assert data["granularity"] == "project"
+    assert data["count"] == 2
+    assert data["trend"][0]["total_loc"] == 1000
+
+
+@patch("src.api.routes.query_current_loc_by_branch")
+def test_get_branch_metrics_endpoint(mock_query):
+    mock_query.return_value = [
+        {
+            "branch": "main",
+            "time": datetime.fromisoformat("2026-02-25T19:00:00+00:00"),
+            "total_loc": 1500,
+            "repo_id": "test-repo",
+        },
+        {
+            "branch": "develop",
+            "time": datetime.fromisoformat("2026-02-25T18:00:00+00:00"),
+            "total_loc": 1400,
+            "repo_id": "test-repo",
+        }
+    ]
+    
+    response = client.get("/metrics/timeseries/by-branch/test-repo")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["repo_id"] == "test-repo"
+    assert data["count"] == 2
+    assert data["branches"][0]["branch"] == "main"
+    assert data["branches"][0]["total_loc"] == 1500
+
+
+@patch("src.api.routes.query_loc_change_between")
+def test_get_loc_change_endpoint(mock_query):
+    mock_query.return_value = {
+        "repo_id": "test-repo",
+        "timestamp1": "2026-02-20T10:00:00+00:00",
+        "timestamp2": "2026-02-25T19:00:00+00:00",
+        "loc_at_time1": 1000,
+        "loc_at_time2": 1200,
+        "absolute_change": 200,
+        "percent_change": 20.0,
+        "granularity": "project",
+    }
+    
+    response = client.get(
+        "/metrics/timeseries/change/test-repo?"
+        "timestamp1=2026-02-20T10:00:00Z&timestamp2=2026-02-25T19:00:00Z&granularity=project"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["repo_id"] == "test-repo"
+    assert data["loc_at_time1"] == 1000
+    assert data["loc_at_time2"] == 1200
+    assert data["absolute_change"] == 200
+    assert data["percent_change"] == 20.0
+
+
+def test_commit_info_model():
+    commit = CommitInfo(
+        commit_hash="abc123",
+        branch="main",
+        time="2026-02-25T19:00:00+00:00"
+    )
+    assert commit.commit_hash == "abc123"
+    assert commit.branch == "main"
+    assert commit.time == "2026-02-25T19:00:00+00:00"
+
+
+def test_commit_list_response_model():
+    commits = [
+        CommitInfo(commit_hash="hash1", branch="main", time="2026-02-20T10:00:00+00:00"),
+        CommitInfo(commit_hash="hash2", branch="develop", time="2026-02-25T19:00:00+00:00"),
+    ]
+    response = CommitListResponse(
+        repo_id="test-repo",
+        start_time="2026-02-20T00:00:00+00:00",
+        end_time="2026-02-26T00:00:00+00:00",
+        branch=None,
+        commits=commits,
+        count=2
+    )
+    assert response.repo_id == "test-repo"
+    assert len(response.commits) == 2
+    assert response.count == 2
+
+
+def test_trend_point_model():
+    point = TrendPoint(
+        time="2026-02-25T19:00:00+00:00",
+        total_loc=1500
+    )
+    assert point.time == "2026-02-25T19:00:00+00:00"
+    assert point.total_loc == 1500
+
+
+def test_loc_trend_response_model():
+    trend = [
+        TrendPoint(time="2026-02-20T10:00:00+00:00", total_loc=1000),
+        TrendPoint(time="2026-02-25T19:00:00+00:00", total_loc=1200),
+    ]
+    response = LocTrendResponse(
+        repo_id="test-repo",
+        granularity="project",
+        start_time="2026-02-20T00:00:00+00:00",
+        end_time="2026-02-26T00:00:00+00:00",
+        trend=trend,
+        count=2
+    )
+    assert response.repo_id == "test-repo"
+    assert response.granularity == "project"
+    assert len(response.trend) == 2
+
+
+def test_branch_metrics_model():
+    metrics = BranchMetrics(
+        branch="main",
+        total_loc=1500,
+        updated_at="2026-02-25T19:00:00+00:00"
+    )
+    assert metrics.branch == "main"
+    assert metrics.total_loc == 1500
+
+
+def test_branch_metrics_response_model():
+    branches = [
+        BranchMetrics(branch="main", total_loc=1500, updated_at="2026-02-25T19:00:00+00:00"),
+        BranchMetrics(branch="develop", total_loc=1400, updated_at="2026-02-25T18:00:00+00:00"),
+    ]
+    response = BranchMetricsResponse(
+        repo_id="test-repo",
+        branches=branches,
+        count=2
+    )
+    assert response.repo_id == "test-repo"
+    assert len(response.branches) == 2
+
+
+def test_loc_change_response_model():
+    response = LocChangeResponse(
+        repo_id="test-repo",
+        timestamp1="2026-02-20T10:00:00+00:00",
+        timestamp2="2026-02-25T19:00:00+00:00",
+        loc_at_time1=1000,
+        loc_at_time2=1200,
+        absolute_change=200,
+        percent_change=20.0,
+        granularity="project"
+    )
+    assert response.repo_id == "test-repo"
+    assert response.loc_at_time1 == 1000
+    assert response.loc_at_time2 == 1200
+    assert response.absolute_change == 200
+    assert response.percent_change == 20.0
+
+
+def test_commit_comparison_response_model():
+    response = CommitComparisonResponse(
+        repo_id="test-repo",
+        commit1="hash1",
+        commit2="hash2",
+        granularity="project",
+        snapshots_commit1=[{"value": 100}],
+        snapshots_commit2=[{"value": 120}]
+    )
+    assert response.repo_id == "test-repo"
+    assert response.commit1 == "hash1"
+    assert response.commit2 == "hash2"
+    assert len(response.snapshots_commit1) == 1
+    assert len(response.snapshots_commit2) == 1

@@ -50,6 +50,7 @@ from src.core.influx import (
     query_snapshots_by_granularity,
     query_current_loc_by_branch,
     query_loc_change_between,
+    _parse_timestamp,
 )
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
