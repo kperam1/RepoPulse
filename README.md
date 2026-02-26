@@ -191,6 +191,31 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 Or just run `./build.sh` (or `.\build.bat` on Windows) — the build script runs tests inside Docker automatically.
 
+## Weighted LOC — Rationale & Formula
+
+RepoPulse provides both **raw LOC** and **weighted LOC** in every response (file, package, and project level).
+
+### Formula
+
+```
+weighted_loc = (code_lines × 1.0) + (comment_lines × 0.5)
+```
+
+| Line type | Weight | Rationale |
+|-----------|--------|-----------|
+| **Code** | 1.0 | Executable logic — full complexity weight |
+| **Comment** (pure) | 0.5 | Documentation effort is valuable but carries less executable complexity |
+| **Mixed** (code + inline comment) | 1.0 | Treated as code — the line contains executable logic |
+| **Blank / excluded** | 0.0 | No developer effort — not counted |
+
+### Why 0.5 for comments?
+
+- Comments represent meaningful developer effort  but do not execute or add cyclomatic complexity.
+- A 0.5 multiplier balances between ignoring comments entirely and counting them equally.
+- This aligns with industry practices where weighted LOC provides a more accurate picture of a codebase's real "weight" for estimation and comparison.
+
+Both `loc` (raw) and `weighted_loc` are returned in every API response at file, package, and project granularity.
+
 ## Services
 
 

@@ -11,6 +11,7 @@ from src.metrics.loc import (
     count_loc_in_file,
     count_loc_in_directory,
     is_supported_file,
+    calculate_weighted_loc,
 )
 
 client = TestClient(app)
@@ -289,6 +290,139 @@ class TestCommentDetection:
         )
         result = count_loc_in_content(content, language="c-style")
         assert result.loc + result.blank_lines + result.excluded_lines + result.comment_lines == result.total_lines
+
+
+class TestWeightedLOC:
+    """Tests for the weighted LOC calculation: code × 1.0 + comments × 0.5."""
+
+    # ── 1. Pure code – no comments → weighted == raw LOC ─────────────────
+
+    def test_pure_code_weighted_equals_raw(self):
+        content = (
+            "int a = 1;\n"
+            "int b = 2;\n"
+            "int c = a + b;\n"
+        )
+        result = count_loc_in_content(content, language="c-style")
+        assert result.loc == 3
+        assert result.comment_lines == 0
+        assert result.weighted_loc == 3.0  # 3×1.0 + 0×0.5
+
+    # ── 2. Pure comments – no code → weighted == comments × 0.5 ──────────
+
+    def test_pure_comments_weighted(self):
+        content = (
+            "// comment one\n"
+            "// comment two\n"
+            "// comment three\n"
+            "// comment four\n"
+        )
+        result = count_loc_in_content(content, language="c-style")
+        assert result.loc == 0
+        assert result.comment_lines == 4
+        assert result.weighted_loc == 2.0  # 0×1.0 + 4×0.5
+
+    # ── 3. Mixed code and comments → correct weighting ───────────────────
+
+    def test_code_and_comments_weighted(self):
+        content = (
+            "package com.example;\n"
+            "// utility class\n"
+            "public class Foo {\n"
+            "    int x = 1;\n"
+            "}\n"
+        )
+        result = count_loc_in_content(content, language="c-style")
+        # code: package, class decl, int x = 3 LOC; comment: 1; excluded: } = 1
+        assert result.loc == 3
+        assert result.comment_lines == 1
+        assert result.weighted_loc == 3.5  # 3×1.0 + 1×0.5
+
+    # ── 4. Empty file → weighted == 0.0 ──────────────────────────────────
+
+    def test_empty_content_weighted_zero(self):
+        result = count_loc_in_content("")
+        assert result.weighted_loc == 0.0
+
+    # ── 5. Javadoc block – many comment lines ────────────────────────────
+
+    def test_javadoc_weighted(self):
+        content = (
+            "/**\n"
+            " * Adds two numbers.\n"
+            " * @param a first\n"
+            " * @param b second\n"
+            " */\n"
+            "public int add(int a, int b) {\n"
+            "    return a + b;\n"
+            "}\n"
+        )
+        result = count_loc_in_content(content, language="c-style")
+        assert result.loc == 2
+        assert result.comment_lines == 5
+        assert result.weighted_loc == 4.5  # 2×1.0 + 5×0.5
+
+    # ── 6. Python docstrings – weighted correctly ────────────────────────
+
+    def test_python_docstring_weighted(self):
+        content = (
+            '"""Module docstring."""\n'
+            "\n"
+            "def foo():\n"
+            '    """Function docstring."""\n'
+            "    return 1\n"
+        )
+        result = count_loc_in_content(content, language="python")
+        assert result.comment_lines == 2  # two docstring lines
+        assert result.loc == 2            # def + return
+        assert result.weighted_loc == 3.0  # 2×1.0 + 2×0.5
+
+    # ── 7. calculate_weighted_loc function directly ──────────────────────
+
+    def test_calculate_weighted_loc_direct(self):
+        assert calculate_weighted_loc(10, 0) == 10.0
+        assert calculate_weighted_loc(0, 10) == 5.0
+        assert calculate_weighted_loc(10, 10) == 15.0
+        assert calculate_weighted_loc(0, 0) == 0.0
+        assert calculate_weighted_loc(100, 20) == 110.0
+
+    # ── 8. Mixed line (code+comment) counts as code weight only ──────────
+
+    def test_mixed_line_weighted_as_code(self):
+        content = (
+            "int x = 1; // init\n"
+            "int y = 2;\n"
+        )
+        result = count_loc_in_content(content, language="c-style")
+        # mixed line → loc=2, comment_lines=0
+        assert result.loc == 2
+        assert result.comment_lines == 0
+        assert result.weighted_loc == 2.0  # 2×1.0 + 0×0.5
+
+    # ── 9. Directory-level weighted LOC sums correctly ────────────────────
+
+    def test_directory_weighted_loc_sums(self):
+        project = count_loc_in_directory(_sample_path("python_project"))
+        assert project.total_weighted_loc > 0
+        assert project.total_weighted_loc == pytest.approx(
+            sum(f.weighted_loc for f in project.files)
+        )
+        # weighted < raw LOC + comments because comments are halved
+        assert project.total_weighted_loc <= project.total_loc + project.total_comment_lines
+
+    # ── 10. API response includes weighted_loc ───────────────────────────
+
+    def test_endpoint_returns_weighted_loc(self):
+        abs_path = os.path.abspath(_sample_path("java_project"))
+        response = client.post("/metrics/loc", json={"repo_path": abs_path})
+        assert response.status_code == 200
+        data = response.json()
+        assert "total_weighted_loc" in data
+        assert data["total_weighted_loc"] >= 0
+        for f in data["files"]:
+            assert "weighted_loc" in f
+        for pkg in data["packages"]:
+            assert "weighted_loc" in pkg
 
 
 class TestDirectoryScanning:
