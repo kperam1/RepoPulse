@@ -181,7 +181,7 @@ class CommitInfo(BaseModel):
 
 
 class CommitListResponse(BaseModel):
-    """List of commits in a date range."""
+    """Commits in date range."""
     repo_id: str = Field(..., description="Repository ID")
     start_time: str = Field(..., description="Range start")
     end_time: str = Field(..., description="Range end")
@@ -198,6 +198,48 @@ class CommitComparisonResponse(BaseModel):
     granularity: str = Field(..., description="Granularity level")
     snapshots_commit1: list[dict] = Field(..., description="Snapshots from commit 1")
     snapshots_commit2: list[dict] = Field(..., description="Snapshots from commit 2")
+
+
+class TrendPoint(BaseModel):
+    """Single point in LOC trend."""
+    time: str = Field(..., description="Timestamp")
+    total_loc: int = Field(..., description="Total LOC")
+
+
+class LocTrendResponse(BaseModel):
+    """LOC values over time."""
+    repo_id: str = Field(..., description="Repository ID")
+    granularity: str = Field(..., description="Granularity level")
+    start_time: str = Field(..., description="Range start")
+    end_time: str = Field(..., description="Range end")
+    trend: list[TrendPoint] = Field(..., description="Trend points")
+    count: int = Field(..., description="Count")
+
+
+class BranchMetrics(BaseModel):
+    """Latest LOC for a branch."""
+    branch: str = Field(..., description="Branch name")
+    total_loc: int = Field(..., description="Total LOC")
+    updated_at: str = Field(..., description="Latest update time")
+
+
+class BranchMetricsResponse(BaseModel):
+    """Latest LOC by branch."""
+    repo_id: str = Field(..., description="Repository ID")
+    branches: list[BranchMetrics] = Field(..., description="Branch metrics")
+    count: int = Field(..., description="Count")
+
+
+class LocChangeResponse(BaseModel):
+    """LOC change data."""
+    repo_id: str = Field(..., description="Repository ID")
+    timestamp1: str = Field(..., description="Time 1")
+    timestamp2: str = Field(..., description="Time 2")
+    loc_at_time1: int = Field(..., description="LOC at time 1")
+    loc_at_time2: int = Field(..., description="LOC at time 2")
+    absolute_change: int = Field(..., description="Absolute change")
+    percent_change: float = Field(..., description="Percent change")
+    granularity: str = Field(..., description="Granularity")
 
 
 # LOC Metrics Schema

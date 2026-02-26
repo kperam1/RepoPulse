@@ -23,7 +23,7 @@ def get_client() -> InfluxDBClient:
 
 
 def _parse_timestamp(ts_str: Optional[str]) -> Optional[datetime]:
-    """Parse ISO 8601 timestamp string to datetime object or None."""
+    """Parse ISO 8601 timestamp or return None."""
     if not ts_str:
         return None
     try:
@@ -36,7 +36,7 @@ def _parse_timestamp(ts_str: Optional[str]) -> Optional[datetime]:
 
 
 def write_loc_metric(loc_metric: dict) -> None:
-    """Write a LOC metric point to InfluxDB."""
+    """Write LOC metric to InfluxDB."""
     client = get_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
@@ -70,7 +70,7 @@ def write_loc_metric(loc_metric: dict) -> None:
 
 
 def write_timeseries_snapshot(snapshot: dict) -> None:
-    """Write a time-series metric snapshot to InfluxDB linked to a commit."""
+    """Write time-series metric snapshot linked to commit."""
     client = get_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
@@ -255,7 +255,7 @@ def query_commits_in_range(
     end_time: datetime,
     branch: Optional[str] = None
 ) -> list[dict]:
-    """Get all commits with snapshots in a date range."""
+    """Get commits with snapshots in date range."""
     start_iso = start_time.isoformat()
     end_iso = end_time.isoformat()
     
@@ -295,7 +295,7 @@ def query_compare_commits(
     commit2: str,
     granularity: str = "project"
 ) -> dict:
-    """Compare metrics between two commits at same granularity level."""
+    """Compare metrics between two commits."""
     snap1 = query_snapshots_by_commit(repo_id, commit1)
     snap2 = query_snapshots_by_commit(repo_id, commit2)
     
@@ -309,4 +309,142 @@ def query_compare_commits(
         "granularity": granularity,
         "snapshots_commit1": snap1_filtered,
         "snapshots_commit2": snap2_filtered,
+    }
+
+
+def query_loc_trend(
+    repo_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    granularity: str = "project"
+) -> list[dict]:
+    """Get LOC trend over time."""
+    start_iso = start_time.isoformat()
+    end_iso = end_time.isoformat()
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: {start_iso}, stop: {end_iso})
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "{granularity}")
+      |> filter(fn: (r) => r._field == "total_loc")
+      |> sort(columns: ["_time"])
+    '''
+    
+    results = query_flux(flux_query)
+    trend = []
+    
+    for table in results:
+        for record in table.records:
+            trend.append({
+                "time": record.get_time(),
+                "repo_id": record.values.get("repo_id"),
+                "total_loc": record.get_value(),
+                "granularity": granularity,
+            })
+    return trend
+
+
+def query_snapshots_by_granularity(
+    repo_id: str,
+    granularity: str,
+    limit: int = 100
+) -> list[dict]:
+    """Get snapshots at granularity level."""
+    if granularity not in ("project", "package", "file"):
+        return []
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: -90d)
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "{granularity}")
+      |> sort(columns: ["_time"], desc: true)
+      |> limit(n: {limit})
+    '''
+    
+    results = query_flux(flux_query)
+    snapshots = []
+    
+    for table in results:
+        for record in table.records:
+            snapshots.append({
+                "time": record.get_time(),
+                "repo_id": record.values.get("repo_id"),
+                "granularity": record.values.get("granularity"),
+                "commit_hash": record.values.get("commit_hash"),
+                "value": record.get_value(),
+                "field": record.get_field(),
+            })
+    return snapshots
+
+
+def query_current_loc_by_branch(repo_id: str) -> list[dict]:
+    """Get latest LOC per branch."""
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: -90d)
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "project")
+      |> group(columns: ["branch"])
+      |> sort(columns: ["_time"], desc: true)
+      |> first()
+    '''
+    
+    results = query_flux(flux_query)
+    branches = []
+    
+    for table in results:
+        for record in table.records:
+            branches.append({
+                "branch": record.values.get("branch"),
+                "time": record.get_time(),
+                "total_loc": record.get_value(),
+                "repo_id": record.values.get("repo_id"),
+            })
+    return branches
+
+
+def query_loc_change_between(
+    repo_id: str,
+    ts1: datetime,
+    ts2: datetime,
+    granularity: str = "project"
+) -> dict:
+    """Calculate LOC change between two times."""
+    snap1 = query_snapshot_at_timestamp(repo_id, ts1, granularity)
+    snap2 = query_snapshot_at_timestamp(repo_id, ts2, granularity)
+    
+    loc1 = 0
+    loc2 = 0
+    
+    if snap1:
+        for table in snap1:
+            for record in table.records:
+                if record.get_field() == "total_loc":
+                    loc1 = record.get_value()
+                    break
+    
+    if snap2:
+        for table in snap2:
+            for record in table.records:
+                if record.get_field() == "total_loc":
+                    loc2 = record.get_value()
+                    break
+    
+    change = loc2 - loc1 if (loc1 and loc2) else 0
+    percent_change = (change / loc1 * 100) if loc1 else 0
+    
+    return {
+        "repo_id": repo_id,
+        "timestamp1": ts1.isoformat(),
+        "timestamp2": ts2.isoformat(),
+        "loc_at_time1": loc1,
+        "loc_at_time2": loc2,
+        "absolute_change": change,
+        "percent_change": round(percent_change, 2),
+        "granularity": granularity,
     }

@@ -30,6 +30,10 @@ from src.api.models import (
     CommitInfo,
     CommitListResponse,
     CommitComparisonResponse,
+    LocTrendResponse,
+    BranchMetricsResponse,
+    BranchMetrics,
+    LocChangeResponse,
 )
 from src.metrics.loc import count_loc_in_directory
 from src.core.influx import (
@@ -42,6 +46,10 @@ from src.core.influx import (
     query_snapshots_by_commit,
     query_commits_in_range,
     query_compare_commits,
+    query_loc_trend,
+    query_snapshots_by_granularity,
+    query_current_loc_by_branch,
+    query_loc_change_between,
 )
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
@@ -688,4 +696,93 @@ async def compare_commits(
         )
     except Exception as e:
         logger.error(f"Error comparing commits: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/trend/{repo_id}", response_model=LocTrendResponse)
+async def get_loc_trend(
+    repo_id: str,
+    start_time: str = Query(...),
+    end_time: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        start = _parse_timestamp(start_time)
+        end = _parse_timestamp(end_time)
+        
+        if not start or not end:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if start >= end:
+            return JSONResponse(status_code=400, content={"detail": "start_time must be before end_time"})
+        
+        trend_data = query_loc_trend(repo_id, start, end, granularity)
+        
+        trend = [
+            {"time": t["time"].isoformat() if t.get("time") else "", "total_loc": t.get("total_loc", 0)}
+            for t in trend_data
+        ]
+        
+        return LocTrendResponse(
+            repo_id=repo_id,
+            granularity=granularity,
+            start_time=start.isoformat(),
+            end_time=end.isoformat(),
+            trend=trend,
+            count=len(trend)
+        )
+    except Exception as e:
+        logger.error(f"Error querying trend: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/by-branch/{repo_id}", response_model=BranchMetricsResponse)
+async def get_branch_metrics(repo_id: str):
+    try:
+        branch_data = query_current_loc_by_branch(repo_id)
+        
+        branches = [
+            BranchMetrics(
+                branch=b.get("branch", ""),
+                total_loc=b.get("total_loc", 0),
+                updated_at=b["time"].isoformat() if b.get("time") else ""
+            )
+            for b in branch_data
+        ]
+        
+        return BranchMetricsResponse(
+            repo_id=repo_id,
+            branches=branches,
+            count=len(branches)
+        )
+    except Exception as e:
+        logger.error(f"Error querying branch metrics: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/change/{repo_id}", response_model=LocChangeResponse)
+async def get_loc_change(
+    repo_id: str,
+    timestamp1: str = Query(...),
+    timestamp2: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        ts1 = _parse_timestamp(timestamp1)
+        ts2 = _parse_timestamp(timestamp2)
+        
+        if not ts1 or not ts2:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        change = query_loc_change_between(repo_id, ts1, ts2, granularity)
+        
+        return LocChangeResponse(**change)
+    except Exception as e:
+        logger.error(f"Error calculating change: {e}")
         return JSONResponse(status_code=500, content={"detail": str(e)})
