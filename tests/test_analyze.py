@@ -42,9 +42,10 @@ def _make_sample_tree(dest):
         f.write("# a comment\nprint('hello')\n")
 
 
+@patch("src.api.routes.write_timeseries_snapshot")
 @patch("src.api.routes.write_loc_metric")
 @patch("src.api.routes.GitRepoCloner")
-def test_analyze_success(mock_cloner_cls, mock_write):
+def test_analyze_success(mock_cloner_cls, mock_write, mock_write_ts):
     """Mock the clone, verify LOC is computed and response looks right."""
     import tempfile, shutil
     tmp = tempfile.mkdtemp(prefix="test_analyze_")
@@ -52,9 +53,13 @@ def test_analyze_success(mock_cloner_cls, mock_write):
 
     mock_cloner = MagicMock()
     mock_cloner.clone.return_value = tmp
+    mock_cloner.commit_hash = "abc1234567890def"
     mock_cloner_cls.return_value = mock_cloner
-
-    response = client.post("/analyze", json={"repo_url": "https://github.com/owner/repo"})
+    
+    # Mock the static method get_commit_timestamp
+    with patch("src.api.routes.GitRepoCloner.get_commit_timestamp", return_value="2026-02-25T19:00:00+00:00"):
+        response = client.post("/analyze", json={"repo_url": "https://github.com/owner/repo"})
+    
     assert response.status_code == 200
     data = response.json()
     assert data["total_files"] >= 2
@@ -62,8 +67,10 @@ def test_analyze_success(mock_cloner_cls, mock_write):
     assert "files" in data
     assert "packages" in data
 
-    # write_loc_metric should have been called (project + per-file)
-    assert mock_write.call_count >= 2
+    # write_loc_metric should have been called (project + per-file + per-package)
+    assert mock_write.call_count >= 3
+    # write_timeseries_snapshot should also have been called
+    assert mock_write_ts.call_count >= 3
     mock_cloner.cleanup.assert_called_once()
     shutil.rmtree(tmp, ignore_errors=True)
 

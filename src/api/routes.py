@@ -20,9 +20,10 @@ from src.api.models import (
     PackageLOCResponse,
     FileLOCResponse,
     WorkerHealthResponse,
+    TimeSeriesMetricSnapshot,
 )
 from src.metrics.loc import count_loc_in_directory
-from src.core.influx import get_client, write_loc_metric
+from src.core.influx import get_client, write_loc_metric, write_timeseries_snapshot
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
 logger = logging.getLogger("repopulse")
@@ -200,10 +201,6 @@ async def compute_loc(request: Request):
         ],
     )
 
-
-# --- Analyze Endpoint (clone -> LOC -> InfluxDB) ---
-
-
 @router.post("/analyze", response_model=ProjectLOCResponse, status_code=200)
 async def analyze_repo(request: Request):
     """Clone a public GitHub repo, compute LOC metrics, write to InfluxDB, and return results."""
@@ -230,10 +227,16 @@ async def analyze_repo(request: Request):
         # 2. Compute LOC
         project_loc = count_loc_in_directory(repo_path)
 
-        # 3. Write metrics to InfluxDB
+        # 3. Extract git metadata & Write metrics to InfluxDB
         # Derive a simple repo name from the URL
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
         collected_at = datetime.now(timezone.utc).isoformat()
+        
+        # Get commit information from cloned repo
+        commit_hash = cloner.commit_hash  # Automatically extracted during clone
+        commit_timestamp = GitRepoCloner.get_commit_timestamp(repo_path, commit_hash)
+        
+        logger.info(f"Repository at commit {commit_hash[:8] if commit_hash else 'unknown'}")
 
         # Write project-level metric
         try:
@@ -241,6 +244,7 @@ async def analyze_repo(request: Request):
                 "repo_id": repo_url,
                 "repo_name": repo_name,
                 "branch": "HEAD",
+                "commit_hash": commit_hash,
                 "language": "mixed",
                 "granularity": "project",
                 "project_name": repo_name,
@@ -250,15 +254,38 @@ async def analyze_repo(request: Request):
                 "blank_loc": project_loc.total_blank_lines,
                 "collected_at": collected_at,
             })
+            
+            # Write time-series snapshot for project-level metrics
+            if commit_hash:
+                write_timeseries_snapshot({
+                    "repo_id": repo_url,
+                    "repo_name": repo_name,
+                    "commit_hash": commit_hash,
+                    "commit_timestamp": commit_timestamp,
+                    "branch": "HEAD",
+                    "snapshot_timestamp": collected_at,
+                    "granularity": "project",
+                    "snapshot_type": "loc",
+                    "total_loc": project_loc.total_loc,
+                    "code_loc": project_loc.total_loc,
+                    "comment_loc": project_loc.total_comment_lines,
+                    "blank_loc": project_loc.total_blank_lines,
+                    "project_name": repo_name,
+                    "language": "mixed",
+                })
+            
             # Write per-file metrics
             for f in project_loc.files:
                 ext = os.path.splitext(f.path)[1].lower()
                 lang_map = {".py": "python", ".java": "java", ".ts": "typescript"}
+                lang = lang_map.get(ext, "unknown")
+                
                 write_loc_metric({
                     "repo_id": repo_url,
                     "repo_name": repo_name,
                     "branch": "HEAD",
-                    "language": lang_map.get(ext, "unknown"),
+                    "commit_hash": commit_hash,
+                    "language": lang,
                     "granularity": "file",
                     "project_name": repo_name,
                     "file_path": f.path,
@@ -268,12 +295,34 @@ async def analyze_repo(request: Request):
                     "blank_loc": f.blank_lines,
                     "collected_at": collected_at,
                 })
+                
+                # Write time-series snapshot for file-level metrics
+                if commit_hash:
+                    write_timeseries_snapshot({
+                        "repo_id": repo_url,
+                        "repo_name": repo_name,
+                        "commit_hash": commit_hash,
+                        "commit_timestamp": commit_timestamp,
+                        "branch": "HEAD",
+                        "snapshot_timestamp": collected_at,
+                        "granularity": "file",
+                        "snapshot_type": "loc",
+                        "total_loc": f.loc,
+                        "code_loc": f.loc,
+                        "comment_loc": f.comment_lines,
+                        "blank_loc": f.blank_lines,
+                        "file_path": f.path,
+                        "project_name": repo_name,
+                        "language": lang,
+                    })
+            
             # Write per-package metrics
             for pkg in project_loc.packages:
                 write_loc_metric({
                     "repo_id": repo_url,
                     "repo_name": repo_name,
                     "branch": "HEAD",
+                    "commit_hash": commit_hash,
                     "language": "mixed",
                     "granularity": "package",
                     "project_name": repo_name,
@@ -284,6 +333,27 @@ async def analyze_repo(request: Request):
                     "blank_loc": 0,
                     "collected_at": collected_at,
                 })
+                
+                # Write time-series snapshot for package-level metrics
+                if commit_hash:
+                    write_timeseries_snapshot({
+                        "repo_id": repo_url,
+                        "repo_name": repo_name,
+                        "commit_hash": commit_hash,
+                        "commit_timestamp": commit_timestamp,
+                        "branch": "HEAD",
+                        "snapshot_timestamp": collected_at,
+                        "granularity": "package",
+                        "snapshot_type": "loc",
+                        "total_loc": pkg.loc,
+                        "code_loc": pkg.loc,
+                        "comment_loc": pkg.comment_lines,
+                        "blank_loc": 0,
+                        "package_name": pkg.package,
+                        "project_name": repo_name,
+                        "language": "mixed",
+                    })
+            
             logger.info(f"Wrote {len(project_loc.files) + len(project_loc.packages) + 1} metric points to InfluxDB")
         except Exception as influx_err:
             # InfluxDB write failed but we still return the LOC data

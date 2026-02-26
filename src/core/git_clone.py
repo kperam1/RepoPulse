@@ -2,34 +2,42 @@ import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from typing import Optional
+
+logger_module = __import__("logging")
+logger = logger_module.getLogger("repopulse.core.git_clone")
+
 
 class GitCloneError(Exception):
     pass
 
+
 class GitRepoCloner:
     def __init__(self):
         self.temp_dir: Optional[str] = None
+        self.cloned_at: Optional[str] = None
+        self.commit_hash: Optional[str] = None
 
     def clone(self, repo_url_or_path: str, shallow: bool = True) -> str:
         """Clone a GitHub repo (or copy a local dir) into a temp directory.
         Returns the path to the cloned repo. Raises GitCloneError on failure."""
         self.temp_dir = tempfile.mkdtemp(prefix="repopulse_clone_")
+        self.cloned_at = datetime.utcnow().isoformat()
         try:
             dest_path = os.path.join(self.temp_dir, os.path.basename(repo_url_or_path))
             if os.path.isdir(repo_url_or_path):
-                # Handle existing destination directory
                 shutil.copytree(
                     repo_url_or_path,
                     dest_path,
                     dirs_exist_ok=True
                 )
+                self.commit_hash = self.get_commit_hash(dest_path)
                 return dest_path
             else:
-                # remote URL — clone it
                 dest = os.path.join(self.temp_dir, "repo")
                 env = os.environ.copy()
-                env["GIT_TERMINAL_PROMPT"] = "0"   # don't prompt for creds
+                env["GIT_TERMINAL_PROMPT"] = "0"
                 cmd = ["git", "clone"]
                 if shallow:
                     cmd += ["--depth", "1"]
@@ -39,6 +47,8 @@ class GitRepoCloner:
                 )
                 if result.returncode != 0:
                     raise GitCloneError(f"Git clone failed: {result.stderr.strip()}")
+                self.commit_hash = self.get_commit_hash(dest)
+                logger.info(f"Cloned repository @ commit {self.commit_hash[:8] if self.commit_hash else 'unknown'}")
                 return dest
         except GitCloneError:
             self.cleanup()
@@ -46,6 +56,47 @@ class GitRepoCloner:
         except Exception as e:
             self.cleanup()
             raise GitCloneError(f"Failed to clone repo: {e}")
+
+    @staticmethod
+    def get_commit_hash(repo_path: str) -> Optional[str]:
+        """Extract the current HEAD commit hash from a Git repository."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                logger.warning(f"Failed to get commit hash from {repo_path}: {result.stderr}")
+                return None
+        except Exception as e:
+            logger.warning(f"Error extracting commit hash: {e}")
+            return None
+
+    @staticmethod
+    def get_commit_timestamp(repo_path: str, commit_hash: Optional[str] = None) -> Optional[str]:
+        """Extract the timestamp of a specific commit or HEAD if not provided."""
+        try:
+            ref = commit_hash or "HEAD"
+            result = subprocess.run(
+                ["git", "log", "-1", "--format=%aI", ref],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                logger.warning(f"Failed to get commit timestamp: {result.stderr}")
+                return None
+        except Exception as e:
+            logger.warning(f"Error extracting commit timestamp: {e}")
+            return None
 
     def cleanup(self):
         if self.temp_dir and os.path.exists(self.temp_dir):
