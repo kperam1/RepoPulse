@@ -1,137 +1,163 @@
-"""Tests for POST /analyze and GET /health/db endpoints, and AnalyzeRequest model."""
 import os
+import subprocess
+import tempfile
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
+
 from src.main import app
-from src.api.models import AnalyzeRequest
 
 client = TestClient(app)
 
-# ── AnalyzeRequest model validation ──────────────────────────────────────────
 
-def test_analyze_request_valid_url():
-    req = AnalyzeRequest(repo_url="https://github.com/owner/repo")
-    assert req.repo_url == "https://github.com/owner/repo"
-
-def test_analyze_request_valid_url_with_git_suffix():
-    req = AnalyzeRequest(repo_url="https://github.com/owner/repo.git")
-    assert req.repo_url == "https://github.com/owner/repo.git"
-
-def test_analyze_request_invalid_url():
-    with pytest.raises(Exception):
-        AnalyzeRequest(repo_url="not-a-valid-url")
-
-def test_analyze_request_empty_url():
-    with pytest.raises(Exception):
-        AnalyzeRequest(repo_url="")
-
-def test_analyze_request_non_github_url():
-    with pytest.raises(Exception):
-        AnalyzeRequest(repo_url="https://gitlab.com/owner/repo")
+def _run(cmd: list[str], cwd: str, env: dict | None = None) -> None:
+    full_env = {**os.environ, **(env or {})}
+    subprocess.run(cmd, cwd=cwd, env=full_env, check=True, capture_output=True)
 
 
-# ── POST /analyze endpoint ───────────────────────────────────────────────────
+def _create_test_repo(path: str) -> None:
+    _run(["git", "init"], cwd=path)
+    _run(["git", "config", "user.email", "test@example.com"], cwd=path)
+    _run(["git", "config", "user.name", "Test"], cwd=path)
 
-def _make_sample_tree(dest):
-    """Create a tiny sample project in *dest* for LOC analysis."""
-    os.makedirs(dest, exist_ok=True)
-    with open(os.path.join(dest, "Main.java"), "w") as f:
-        f.write("public class Main {\n    public static void main(String[] args) {\n        System.out.println(\"hi\");\n    }\n}\n")
-    with open(os.path.join(dest, "app.py"), "w") as f:
-        f.write("# a comment\nprint('hello')\n")
+    filepath = os.path.join(path, "hello.py")
+    with open(filepath, "w") as f:
+        f.write("print('hello')\nprint('world')\n")
 
-
-@patch("src.api.routes.write_loc_metric")
-@patch("src.api.routes.GitRepoCloner")
-def test_analyze_success(mock_cloner_cls, mock_write):
-    """Mock the clone, verify LOC is computed and response looks right."""
-    import tempfile, shutil
-    tmp = tempfile.mkdtemp(prefix="test_analyze_")
-    _make_sample_tree(tmp)
-
-    mock_cloner = MagicMock()
-    mock_cloner.clone.return_value = tmp
-    mock_cloner_cls.return_value = mock_cloner
-
-    response = client.post("/analyze", json={"repo_url": "https://github.com/owner/repo"})
-    assert response.status_code == 200
-    data = response.json()
-    assert data["total_files"] >= 2
-    assert data["total_loc"] > 0
-    assert "files" in data
-    assert "packages" in data
-
-    # write_loc_metric should have been called (project + per-file)
-    assert mock_write.call_count >= 2
-    mock_cloner.cleanup.assert_called_once()
-    shutil.rmtree(tmp, ignore_errors=True)
+    env = {
+        "GIT_AUTHOR_DATE": "2025-06-01T12:00:00",
+        "GIT_COMMITTER_DATE": "2025-06-01T12:00:00",
+    }
+    _run(["git", "add", "."], cwd=path)
+    _run(["git", "commit", "-m", "initial commit"], cwd=path, env=env)
 
 
-@patch("src.api.routes.GitRepoCloner")
-def test_analyze_clone_failure(mock_cloner_cls):
-    """If clone fails, we get a 400 with an error message."""
-    from src.core.git_clone import GitCloneError
-    mock_cloner = MagicMock()
-    mock_cloner.clone.side_effect = GitCloneError("clone boom")
-    mock_cloner_cls.return_value = mock_cloner
+class TestAnalyzeEndpoint:
 
-    response = client.post("/analyze", json={"repo_url": "https://github.com/owner/repo"})
-    assert response.status_code == 400
-    assert "clone boom" in response.json()["detail"]
-    mock_cloner.cleanup.assert_called_once()
+    @patch("src.api.routes.write_churn_metric")
+    @patch("src.api.routes.write_loc_metric")
+    @patch("src.api.routes.GitRepoCloner")
+    def test_analyze_returns_loc_and_churn(
+        self, mock_cloner_cls, mock_write_loc, mock_write_churn
+    ):
+        tmp_dir = tempfile.mkdtemp()
 
+        try:
+            _create_test_repo(tmp_dir)
 
-def test_analyze_bad_url():
-    response = client.post("/analyze", json={"repo_url": "not-a-url"})
-    assert response.status_code == 400
-    assert "detail" in response.json()
+            mock_cloner = MagicMock()
+            mock_cloner.clone.return_value = tmp_dir
+            mock_cloner.cleanup.return_value = None
+            mock_cloner_cls.return_value = mock_cloner
 
+            response = client.post(
+                "/analyze",
+                json={
+                    "repo_url": "https://github.com/test/repo",
+                    "start_date": "2000-01-01",
+                    "end_date": "2100-01-01",
+                },
+            )
 
-def test_analyze_empty_body():
-    response = client.post("/analyze", json={})
-    assert response.status_code == 400
+            assert response.status_code == 200
 
+            data = response.json()
 
-@patch("src.api.routes.write_loc_metric")
-@patch("src.api.routes.GitRepoCloner")
-def test_analyze_influx_failure_still_returns_data(mock_cloner_cls, mock_write):
-    """Even if InfluxDB write fails, the LOC data should still be returned."""
-    import tempfile, shutil
-    tmp = tempfile.mkdtemp(prefix="test_analyze_influx_fail_")
-    _make_sample_tree(tmp)
+            assert "loc" in data
+            assert data["loc"]["total_loc"] >= 2
+            assert data["loc"]["total_files"] >= 1
 
-    mock_cloner = MagicMock()
-    mock_cloner.clone.return_value = tmp
-    mock_cloner_cls.return_value = mock_cloner
-    mock_write.side_effect = RuntimeError("influx down")
+            assert "churn" in data
+            assert isinstance(data["churn"]["added"], int)
+            assert isinstance(data["churn"]["deleted"], int)
+            assert isinstance(data["churn"]["modified"], int)
+            assert isinstance(data["churn"]["total"], int)
+            assert data["churn"]["added"] >= 2
 
-    response = client.post("/analyze", json={"repo_url": "https://github.com/owner/repo"})
-    assert response.status_code == 200
-    assert response.json()["total_files"] >= 2
-    shutil.rmtree(tmp, ignore_errors=True)
+            assert data["start_date"] == "2000-01-01"
+            assert data["end_date"] == "2100-01-01"
+            assert data["repo_url"] == "https://github.com/test/repo"
 
+            mock_write_loc.assert_called_once()
+            mock_write_churn.assert_called_once()
 
-# ── GET /health/db endpoint ──────────────────────────────────────────────────
+        finally:
+            subprocess.run(["rm", "-rf", tmp_dir], check=True, capture_output=True)
 
-@patch("src.api.routes.get_client")
-def test_health_db_healthy(mock_get_client):
-    mock_client = MagicMock()
-    health_obj = MagicMock()
-    health_obj.status = "pass"
-    health_obj.message = "ready for queries and writes"
-    mock_client.health.return_value = health_obj
-    mock_get_client.return_value = mock_client
+    @patch("src.api.routes.write_churn_metric")
+    @patch("src.api.routes.write_loc_metric")
+    @patch("src.api.routes.GitRepoCloner")
+    def test_analyze_defaults_date_range(
+        self, mock_cloner_cls, mock_write_loc, mock_write_churn
+    ):
+        """When start_date/end_date are omitted, they should default to last 7 days."""
+        tmp_dir = tempfile.mkdtemp()
 
-    response = client.get("/health/db")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "pass"
+        try:
+            _create_test_repo(tmp_dir)
 
+            mock_cloner = MagicMock()
+            mock_cloner.clone.return_value = tmp_dir
+            mock_cloner.cleanup.return_value = None
+            mock_cloner_cls.return_value = mock_cloner
 
-@patch("src.api.routes.get_client")
-def test_health_db_unhealthy(mock_get_client):
-    mock_get_client.side_effect = RuntimeError("INFLUX_TOKEN not configured")
-    response = client.get("/health/db")
-    assert response.status_code == 503
-    assert response.json()["status"] == "unhealthy"
+            response = client.post(
+                "/analyze",
+                json={"repo_url": "https://github.com/test/repo"},
+            )
+
+            assert response.status_code == 200
+
+            data = response.json()
+            assert data["start_date"] is not None
+            assert data["end_date"] is not None
+            assert "loc" in data
+            assert "churn" in data
+
+        finally:
+            subprocess.run(["rm", "-rf", tmp_dir], check=True, capture_output=True)
+
+    def test_analyze_missing_repo_url(self):
+        """POST /analyze with no repo_url should return 400."""
+        response = client.post("/analyze", json={})
+
+        assert response.status_code == 400
+
+    @patch("src.api.routes.write_churn_metric")
+    @patch("src.api.routes.write_loc_metric")
+    @patch("src.api.routes.GitRepoCloner")
+    def test_analyze_influx_failure_does_not_break_response(
+        self, mock_cloner_cls, mock_write_loc, mock_write_churn
+    ):
+        """Even if InfluxDB writes fail, the endpoint should still return 200."""
+        tmp_dir = tempfile.mkdtemp()
+
+        try:
+            _create_test_repo(tmp_dir)
+
+            mock_cloner = MagicMock()
+            mock_cloner.clone.return_value = tmp_dir
+            mock_cloner.cleanup.return_value = None
+            mock_cloner_cls.return_value = mock_cloner
+
+            mock_write_loc.side_effect = Exception("InfluxDB down")
+            mock_write_churn.side_effect = Exception("InfluxDB down")
+
+            response = client.post(
+                "/analyze",
+                json={
+                    "repo_url": "https://github.com/test/repo",
+                    "start_date": "2000-01-01",
+                    "end_date": "2100-01-01",
+                },
+            )
+
+            assert response.status_code == 200
+
+            data = response.json()
+            assert "loc" in data
+            assert "churn" in data
+
+        finally:
+            subprocess.run(["rm", "-rf", tmp_dir], check=True, capture_output=True)

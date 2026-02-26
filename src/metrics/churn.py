@@ -1,6 +1,27 @@
 import os
 import subprocess
 
+from src.metrics.git_history import get_commit_history
+
+
+def compute_repo_churn(repo_path: str, start_date: str, end_date: str) -> dict:
+    commits = get_commit_history(repo_path, start_date, end_date)
+
+    total_added = 0
+    total_deleted = 0
+
+    for commit in commits:
+        churn = compute_commit_churn(repo_path, commit["hash"])
+        total_added += churn["added"]
+        total_deleted += churn["deleted"]
+
+    return {
+        "added": total_added,
+        "deleted": total_deleted,
+        "modified": min(total_added, total_deleted),
+        "total": total_added + total_deleted,
+    }
+
 
 def compute_commit_churn(repo_path: str, sha: str) -> dict:
     if not os.path.isdir(repo_path):
