@@ -115,3 +115,135 @@ def query_flux(query: str):
     client = get_client()
     query_api = client.query_api()
     return query_api.query(org=Config.INFLUX_ORG, query=query)
+
+
+def query_timeseries_snapshots_by_repo(
+    repo_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    granularity: Optional[str] = None
+) -> list[dict]:
+    start_iso = start_time.isoformat()
+    end_iso = end_time.isoformat()
+    granularity_filter = f'|> filter(fn: (r) => r.granularity == "{granularity}")' if granularity else ""
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: {start_iso}, stop: {end_iso})
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      {granularity_filter}
+      |> sort(columns: ["_time"], desc: true)
+    '''
+    
+    results = query_flux(flux_query)
+    snapshots = []
+    for table in results:
+        for record in table.records:
+            snapshots.append({
+                "time": record.get_time(),
+                "repo_id": record.values.get("repo_id"),
+                "repo_name": record.values.get("repo_name"),
+                "commit_hash": record.values.get("commit_hash"),
+                "branch": record.values.get("branch"),
+                "granularity": record.values.get("granularity"),
+                "value": record.get_value(),
+                "field": record.get_field(),
+            })
+    return snapshots
+
+
+def query_latest_snapshot(
+    repo_id: str,
+    granularity: str = "project"
+) -> Optional[dict]:
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: -30d)
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "{granularity}")
+      |> sort(columns: ["_time"], desc: true)
+      |> limit(n: 1)
+    '''
+    
+    results = query_flux(flux_query)
+    if not results or not results[0].records:
+        return None
+    
+    record = results[0].records[0]
+    return {
+        "time": record.get_time(),
+        "repo_id": record.values.get("repo_id"),
+        "repo_name": record.values.get("repo_name"),
+        "commit_hash": record.values.get("commit_hash"),
+        "branch": record.values.get("branch"),
+        "granularity": record.values.get("granularity"),
+        "value": record.get_value(),
+        "field": record.get_field(),
+    }
+
+
+def query_snapshot_at_timestamp(
+    repo_id: str,
+    timestamp: datetime,
+    granularity: str = "project"
+) -> Optional[dict]:
+    end_iso = timestamp.isoformat()
+    start_iso = (timestamp - __import__("datetime").timedelta(days=30)).isoformat()
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: {start_iso}, stop: {end_iso})
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "{granularity}")
+      |> sort(columns: ["_time"], desc: true)
+      |> limit(n: 1)
+    '''
+    
+    results = query_flux(flux_query)
+    if not results or not results[0].records:
+        return None
+    
+    record = results[0].records[0]
+    return {
+        "time": record.get_time(),
+        "repo_id": record.values.get("repo_id"),
+        "repo_name": record.values.get("repo_name"),
+        "commit_hash": record.values.get("commit_hash"),
+        "branch": record.values.get("branch"),
+        "granularity": record.values.get("granularity"),
+        "value": record.get_value(),
+        "field": record.get_field(),
+    }
+
+
+def query_snapshots_by_commit(
+    repo_id: str,
+    commit_hash: str
+) -> list[dict]:
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: -90d)
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.commit_hash == "{commit_hash}")
+      |> sort(columns: ["_time"], desc: true)
+    '''
+    
+    results = query_flux(flux_query)
+    snapshots = []
+    for table in results:
+        for record in table.records:
+            snapshots.append({
+                "time": record.get_time(),
+                "repo_id": record.values.get("repo_id"),
+                "repo_name": record.values.get("repo_name"),
+                "commit_hash": record.values.get("commit_hash"),
+                "branch": record.values.get("branch"),
+                "granularity": record.values.get("granularity"),
+                "value": record.get_value(),
+                "field": record.get_field(),
+            })
+    return snapshots

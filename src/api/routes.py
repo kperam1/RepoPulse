@@ -1,9 +1,9 @@
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Query
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -21,9 +21,22 @@ from src.api.models import (
     FileLOCResponse,
     WorkerHealthResponse,
     TimeSeriesMetricSnapshot,
+    SnapshotHistoryResponse,
+    LatestSnapshotResponse,
+    CommitSnapshotsResponse,
+    SnapshotRecord,
+    SnapshotData,
 )
 from src.metrics.loc import count_loc_in_directory
-from src.core.influx import get_client, write_loc_metric, write_timeseries_snapshot
+from src.core.influx import (
+    get_client,
+    write_loc_metric,
+    write_timeseries_snapshot,
+    query_timeseries_snapshots_by_repo,
+    query_latest_snapshot,
+    query_snapshot_at_timestamp,
+    query_snapshots_by_commit,
+)
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
 logger = logging.getLogger("repopulse")
@@ -406,3 +419,197 @@ async def analyze_repo(request: Request):
     finally:
         cloner.cleanup()
 
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/latest", response_model=LatestSnapshotResponse)
+async def get_latest_snapshot(repo_id: str, granularity: str = Query("project")):
+    """Get the most recent metric snapshot for a repository."""
+    try:
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        snapshot_data = query_latest_snapshot(repo_id, granularity)
+        
+        if not snapshot_data:
+            return LatestSnapshotResponse(
+                repo_id=repo_id,
+                repo_name="unknown",
+                latest_snapshot=None
+            )
+        
+        snapshot_record = SnapshotRecord(
+            timestamp=snapshot_data["time"].isoformat() if snapshot_data["time"] else "",
+            repo_id=snapshot_data.get("repo_id", ""),
+            repo_name=snapshot_data.get("repo_name", ""),
+            commit_hash=snapshot_data.get("commit_hash", ""),
+            branch=snapshot_data.get("branch", ""),
+            granularity=snapshot_data.get("granularity", ""),
+            metrics=SnapshotData(
+                total_loc=0,
+                code_loc=0,
+                comment_loc=0,
+                blank_loc=0
+            ),
+            file_path=snapshot_data.get("file_path"),
+            package_name=snapshot_data.get("package_name")
+        )
+        
+        return LatestSnapshotResponse(
+            repo_id=repo_id,
+            repo_name=snapshot_data.get("repo_name", ""),
+            latest_snapshot=snapshot_record
+        )
+    except Exception as e:
+        logger.error(f"Error querying latest snapshot: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/range", response_model=SnapshotHistoryResponse)
+async def get_snapshot_history(
+    repo_id: str,
+    start_time: str = Query(..., description="Start timestamp (ISO 8601)"),
+    end_time: str = Query(..., description="End timestamp (ISO 8601)"),
+    granularity: str = Query("project", description="Granularity filter")
+):
+    try:
+        start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+        
+        if start_dt >= end_dt:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "start_time must be before end_time"}
+            )
+        
+        snapshots_data = query_timeseries_snapshots_by_repo(
+            repo_id,
+            start_dt,
+            end_dt,
+            granularity if granularity != "all" else None
+        )
+        
+        snapshots = []
+        repo_name = "unknown"
+        
+        for snap in snapshots_data:
+            if not repo_name or repo_name == "unknown":
+                repo_name = snap.get("repo_name", "unknown")
+            
+            snapshot_record = SnapshotRecord(
+                timestamp=snap["time"].isoformat() if snap.get("time") else "",
+                repo_id=snap.get("repo_id", ""),
+                repo_name=snap.get("repo_name", ""),
+                commit_hash=snap.get("commit_hash", ""),
+                branch=snap.get("branch", ""),
+                granularity=snap.get("granularity", ""),
+                metrics=SnapshotData(
+                    total_loc=0,
+                    code_loc=0,
+                    comment_loc=0,
+                    blank_loc=0
+                ),
+                file_path=snap.get("file_path"),
+                package_name=snap.get("package_name")
+            )
+            snapshots.append(snapshot_record)
+        
+        return SnapshotHistoryResponse(
+            repo_id=repo_id,
+            repo_name=repo_name,
+            granularity=granularity,
+            start_time=start_time,
+            end_time=end_time,
+            snapshots=snapshots,
+            count=len(snapshots)
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Invalid timestamp format: {e}"}
+        )
+    except Exception as e:
+        logger.error(f"Error querying snapshot history: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/at/{timestamp}", response_model=SnapshotRecord)
+async def get_snapshot_at_time(repo_id: str, timestamp: str):
+    try:
+        target_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        
+        snapshot_data = query_snapshot_at_timestamp(repo_id, target_dt)
+        
+        if not snapshot_data:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": f"No snapshot found for {repo_id} at or before {timestamp}"}
+            )
+        
+        return SnapshotRecord(
+            timestamp=snapshot_data["time"].isoformat() if snapshot_data.get("time") else "",
+            repo_id=snapshot_data.get("repo_id", ""),
+            repo_name=snapshot_data.get("repo_name", ""),
+            commit_hash=snapshot_data.get("commit_hash", ""),
+            branch=snapshot_data.get("branch", ""),
+            granularity=snapshot_data.get("granularity", ""),
+            metrics=SnapshotData(
+                total_loc=0,
+                code_loc=0,
+                comment_loc=0,
+                blank_loc=0
+            ),
+            file_path=snapshot_data.get("file_path"),
+            package_name=snapshot_data.get("package_name")
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Invalid timestamp format: {e}"}
+        )
+    except Exception as e:
+        logger.error(f"Error querying snapshot: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/commit/{commit_hash}", response_model=CommitSnapshotsResponse)
+async def get_snapshots_for_commit(repo_id: str, commit_hash: str):
+    try:
+        snapshots_data = query_snapshots_by_commit(repo_id, commit_hash)
+        
+        snapshots = []
+        repo_name = "unknown"
+        
+        for snap in snapshots_data:
+            if not repo_name or repo_name == "unknown":
+                repo_name = snap.get("repo_name", "unknown")
+            
+            snapshot_record = SnapshotRecord(
+                timestamp=snap["time"].isoformat() if snap.get("time") else "",
+                repo_id=snap.get("repo_id", ""),
+                repo_name=snap.get("repo_name", ""),
+                commit_hash=snap.get("commit_hash", ""),
+                branch=snap.get("branch", ""),
+                granularity=snap.get("granularity", ""),
+                metrics=SnapshotData(
+                    total_loc=0,
+                    code_loc=0,
+                    comment_loc=0,
+                    blank_loc=0
+                ),
+                file_path=snap.get("file_path"),
+                package_name=snap.get("package_name")
+            )
+            snapshots.append(snapshot_record)
+        
+        return CommitSnapshotsResponse(
+            repo_id=repo_id,
+            repo_name=repo_name,
+            commit_hash=commit_hash,
+            snapshots=snapshots,
+            count=len(snapshots)
+        )
+    except Exception as e:
+        logger.error(f"Error querying commit snapshots: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})

@@ -115,11 +115,62 @@ class TimeSeriesMetricSnapshot(BaseModel):
     comment_loc: int = Field(..., description="Lines of comments")
     blank_loc: int = Field(..., description="Blank lines")
     
-    # Optional granular fields
     file_path: Optional[str] = Field(None, description="File path for file-level snapshots")
     package_name: Optional[str] = Field(None, description="Package name for package-level snapshots")
     language: Optional[str] = Field(None, description="Programming language")
     project_name: Optional[str] = Field(None, description="Project name if applicable")
+
+
+class SnapshotData(BaseModel):
+    total_loc: int = Field(..., description="Total LOC")
+    code_loc: int = Field(..., description="Code LOC")
+    comment_loc: int = Field(..., description="Comment LOC")
+    blank_loc: int = Field(..., description="Blank lines")
+
+
+class SnapshotRecord(BaseModel):
+    timestamp: str = Field(..., description="Snapshot timestamp")
+    repo_id: str = Field(..., description="Repository ID")
+    repo_name: str = Field(..., description="Repository name")
+    commit_hash: str = Field(..., description="Commit hash")
+    branch: str = Field(..., description="Branch")
+    granularity: str = Field(..., description="Granularity")
+    metrics: SnapshotData = Field(..., description="Metrics")
+    file_path: Optional[str] = Field(None, description="File path")
+    package_name: Optional[str] = Field(None, description="Package name")
+
+
+class SnapshotHistoryResponse(BaseModel):
+    """Historical snapshots for a repository within a date range."""
+    repo_id: str = Field(..., description="Repository ID")
+    repo_name: str = Field(..., description="Repository name")
+    granularity: str = Field(..., description="Granularity")
+    start_time: str = Field(..., description="Range start")
+    end_time: str = Field(..., description="Range end")
+    snapshots: list[SnapshotRecord] = Field(..., description="Snapshots")
+    count: int = Field(..., description="Count")
+
+
+class LatestSnapshotResponse(BaseModel):
+    """Latest snapshot for a repository."""
+    repo_id: str = Field(..., description="Repository ID")
+    repo_name: str = Field(..., description="Repository name")
+    latest_snapshot: Optional[SnapshotRecord] = Field(None, description="Latest snapshot")
+
+
+class CommitSnapshotsResponse(BaseModel):
+    repo_id: str = Field(..., description="Repository ID")
+    repo_name: str = Field(..., description="Repository name")
+    commit_hash: str = Field(..., description="Commit hash")
+    snapshots: list[SnapshotRecord] = Field(..., description="Snapshots")
+    count: int = Field(..., description="Count")
+
+
+class SnapshotQueryRequest(BaseModel):
+    repo_id: str = Field(..., description="Repository ID")
+    start_time: str = Field(..., description="Start timestamp")
+    end_time: str = Field(..., description="End timestamp")
+    granularity: Optional[str] = Field(None, description="Granularity filter")
 
 # LOC Metrics Schema
 class LOCMetrics(BaseModel):
