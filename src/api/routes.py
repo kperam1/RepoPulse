@@ -18,6 +18,7 @@ from src.api.models import (
     LOCRequest,
     ProjectLOCResponse,
     PackageLOCResponse,
+    ModuleLOCResponse,
     FileLOCResponse,
     WorkerHealthResponse,
 )
@@ -183,6 +184,36 @@ async def compute_loc(request: Request):
             )
             for pkg in project_loc.packages
         ],
+        modules=[
+            ModuleLOCResponse(
+                module=m.module,
+                loc=m.loc,
+                package_count=len(m.packages),
+                file_count=m.file_count,
+                comment_lines=m.comment_lines,
+                packages=[
+                    PackageLOCResponse(
+                        package=p.package,
+                        loc=p.loc,
+                        file_count=p.file_count,
+                        comment_lines=p.comment_lines,
+                        files=[
+                            FileLOCResponse(
+                                path=f.path,
+                                total_lines=f.total_lines,
+                                loc=f.loc,
+                                blank_lines=f.blank_lines,
+                                excluded_lines=f.excluded_lines,
+                                comment_lines=f.comment_lines,
+                            )
+                            for f in p.files
+                        ],
+                    )
+                    for p in m.packages
+                ],
+            )
+            for m in project_loc.modules
+        ],
         files=[
             FileLOCResponse(
                 path=f.path,
@@ -309,6 +340,33 @@ async def analyze_repo(request: Request):
                     ],
                 )
                 for pkg in project_loc.packages
+            ],
+            modules=[
+                ModuleLOCResponse(
+                    module=m.module,
+                    loc=m.loc,
+                    package_count=len(m.packages),
+                    file_count=m.file_count,
+                    comment_lines=m.comment_lines,
+                    packages=[
+                        PackageLOCResponse(
+                            package=p.package,
+                            loc=p.loc,
+                            file_count=p.file_count,
+                            comment_lines=p.comment_lines,
+                            files=[
+                                FileLOCResponse(
+                                    path=f.path, total_lines=f.total_lines, loc=f.loc,
+                                    blank_lines=f.blank_lines, excluded_lines=f.excluded_lines,
+                                    comment_lines=f.comment_lines,
+                                )
+                                for f in p.files
+                            ],
+                        )
+                        for p in m.packages
+                    ],
+                )
+                for m in project_loc.modules
             ],
             files=[
                 FileLOCResponse(

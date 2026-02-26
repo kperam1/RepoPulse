@@ -1,3 +1,4 @@
+import os
 import re
 import uuid
 from datetime import datetime
@@ -45,9 +46,13 @@ class JobRequest(BaseModel):
             v = v.strip()
             if not v:
                 raise ValueError("local_path cannot be empty")
-            if not v.startswith("/"):
-                raise ValueError("local_path must be an absolute path starting with /")
-            if ".." in v:
+            # Allow absolute paths on Windows and POSIX.
+            # Also accept a leading '/' on Windows (tests use this form).
+            if not (os.path.isabs(v) or v.startswith("/")):
+                raise ValueError("local_path must be an absolute path")
+            # Normalize and disallow any '..' path parts
+            norm = os.path.normpath(v)
+            if ".." in norm.split(os.path.sep):
                 raise ValueError("local_path must not contain '..'")
         return v
 
@@ -138,6 +143,15 @@ class PackageLOCResponse(BaseModel):
     files: list[FileLOCResponse]
 
 
+class ModuleLOCResponse(BaseModel):
+    module: str
+    loc: int
+    package_count: int
+    file_count: int
+    comment_lines: int
+    packages: list[PackageLOCResponse]
+
+
 class ProjectLOCResponse(BaseModel):
     project_root: str
     total_loc: int
@@ -146,6 +160,7 @@ class ProjectLOCResponse(BaseModel):
     total_excluded_lines: int
     total_comment_lines: int
     packages: list[PackageLOCResponse]
+    modules: list[ModuleLOCResponse]
     files: list[FileLOCResponse]
 
 
@@ -160,9 +175,12 @@ class LOCRequest(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("repo_path cannot be empty")
-        if not v.startswith("/"):
-            raise ValueError("repo_path must be an absolute path starting with /")
-        if ".." in v:
+        # Allow absolute paths for the current OS.
+        # Also accept paths that start with '/' on Windows.
+        if not (os.path.isabs(v) or v.startswith("/")):
+            raise ValueError("repo_path must be an absolute path")
+        norm = os.path.normpath(v)
+        if ".." in norm.split(os.path.sep):
             raise ValueError("repo_path must not contain '..'")
         return v
 

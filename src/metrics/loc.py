@@ -44,6 +44,16 @@ class PackageLOC:
 
 
 @dataclass
+class ModuleLOC:
+    module: str
+    loc: int = 0
+    package_count: int = 0
+    file_count: int = 0
+    comment_lines: int = 0
+    packages: list[PackageLOC] = field(default_factory=list)
+
+
+@dataclass
 class ProjectLOC:
     project_root: str = ""
     total_loc: int = 0
@@ -52,6 +62,7 @@ class ProjectLOC:
     total_excluded_lines: int = 0
     total_comment_lines: int = 0
     packages: list[PackageLOC] = field(default_factory=list)
+    modules: list[ModuleLOC] = field(default_factory=list)
     files: list[FileLOC] = field(default_factory=list)
 
 
@@ -246,6 +257,7 @@ SKIP_DIRS = {"node_modules", "__pycache__", "venv", ".venv", "build", "dist"}
 def count_loc_in_directory(directory: str) -> ProjectLOC:
     project = ProjectLOC(project_root=directory)
     package_map: dict[str, PackageLOC] = {}
+    module_map: dict[str, ModuleLOC] = {}
 
     for dirpath, _dirnames, filenames in os.walk(directory):
         rel_dir = os.path.relpath(dirpath, directory)
@@ -278,7 +290,36 @@ def count_loc_in_directory(directory: str) -> ProjectLOC:
             package_map[pkg_key].comment_lines += file_loc.comment_lines
             package_map[pkg_key].files.append(file_loc)
 
+            # Module is the top-level directory under the project root
+            if rel_dir == ".":
+                module_key = "(root)"
+            else:
+                parts = rel_dir.split(os.sep)
+                module_key = parts[0] if parts else "(root)"
+
+            if module_key not in module_map:
+                module_map[module_key] = ModuleLOC(module=module_key)
+            module_map[module_key].loc += file_loc.loc
+            module_map[module_key].file_count += 1
+            module_map[module_key].comment_lines += file_loc.comment_lines
+
     project.packages = sorted(package_map.values(), key=lambda p: p.package)
+    # Add each package to its module and finish the module list
+    pkg_to_module: dict[str, str] = {}
+    for pkg in project.packages:
+        # e.g. 'src/com/example' -> module is 'src'
+        if pkg.package == "(root)":
+            mod = "(root)"
+        else:
+            mod = pkg.package.split(os.sep)[0]
+        pkg_to_module[pkg.package] = mod
+
+    for pkg in project.packages:
+        mod = pkg_to_module.get(pkg.package, "(root)")
+        if mod in module_map:
+            module_map[mod].packages.append(pkg)
+
+    project.modules = sorted(module_map.values(), key=lambda m: m.module)
 
     logger.info(
         f"LOC analysis: {project.total_files} files, "
