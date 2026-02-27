@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from src.metrics.churn import compute_commit_churn
+from src.metrics.churn import compute_commit_churn, compute_daily_churn
 
 
 def _run(cmd: list[str], cwd: str, env: dict | None = None) -> str:
@@ -112,3 +112,55 @@ class TestComputeCommitChurn:
         churn = compute_commit_churn(repo, sha)
 
         assert churn == {"added": 0, "deleted": 0, "modified": 0, "total": 0}
+
+
+def _init_dated_repo(path: str) -> None:
+    _run(["git", "init"], cwd=path)
+    _run(["git", "config", "user.email", "test@example.com"], cwd=path)
+    _run(["git", "config", "user.name", "Test"], cwd=path)
+    _run(["git", "commit", "--allow-empty", "-m", "initial"], cwd=path)
+
+
+def _commit_dated(path: str, filename: str, content: str, msg: str, iso_date: str) -> str:
+    filepath = os.path.join(path, filename)
+    with open(filepath, "w") as f:
+        f.write(content)
+    _run(["git", "add", filename], cwd=path)
+    env = {"GIT_AUTHOR_DATE": iso_date, "GIT_COMMITTER_DATE": iso_date}
+    _run(["git", "commit", "-m", msg], cwd=path, env=env)
+    return _run(["git", "rev-parse", "HEAD"], cwd=path)
+
+
+class TestComputeDailyChurn:
+
+    def test_aggregates_multiple_commits_same_day(self, tmp_path):
+        repo = str(tmp_path)
+        _init_dated_repo(repo)
+
+        _commit_dated(repo, "a.py", "line1\n", "add a", "2026-03-10T10:00:00")
+        _commit_dated(repo, "b.py", "line1\nline2\n", "add b", "2026-03-10T14:00:00")
+        _commit_dated(repo, "c.py", "x\n", "add c", "2026-03-11T09:00:00")
+
+        daily = compute_daily_churn(repo, "2026-03-10", "2026-03-11")
+
+        assert "2026-03-10" in daily
+        assert "2026-03-11" in daily
+        assert len(daily) == 2
+
+        assert daily["2026-03-10"]["added"] == 3
+        assert daily["2026-03-10"]["deleted"] == 0
+        assert daily["2026-03-10"]["modified"] == 0
+        assert daily["2026-03-10"]["total"] == 3
+
+        assert daily["2026-03-11"]["added"] == 1
+        assert daily["2026-03-11"]["total"] == 1
+
+    def test_returns_empty_when_no_commits_in_range(self, tmp_path):
+        repo = str(tmp_path)
+        _init_dated_repo(repo)
+
+        _commit_dated(repo, "a.py", "line1\n", "add a", "2026-03-10T10:00:00")
+
+        daily = compute_daily_churn(repo, "2030-01-01", "2030-12-31")
+
+        assert daily == {}

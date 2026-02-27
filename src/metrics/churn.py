@@ -23,6 +23,31 @@ def compute_repo_churn(repo_path: str, start_date: str, end_date: str) -> dict:
     }
 
 
+def compute_daily_churn(repo_path: str, start_date: str, end_date: str) -> dict[str, dict[str, int]]:
+    commits = get_commit_history(repo_path, start_date, end_date)
+
+    if not commits:
+        return {}
+
+    daily: dict[str, dict[str, int]] = {}
+
+    for commit in commits:
+        day = commit["date"]
+        churn = compute_commit_churn(repo_path, commit["hash"])
+
+        if day not in daily:
+            daily[day] = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
+
+        daily[day]["added"] += churn["added"]
+        daily[day]["deleted"] += churn["deleted"]
+
+    for day in daily:
+        daily[day]["modified"] = min(daily[day]["added"], daily[day]["deleted"])
+        daily[day]["total"] = daily[day]["added"] + daily[day]["deleted"]
+
+    return daily
+
+
 def compute_commit_churn(repo_path: str, sha: str) -> dict:
     if not os.path.isdir(repo_path):
         raise ValueError(f"Repository path does not exist: {repo_path}")

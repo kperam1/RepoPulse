@@ -22,8 +22,8 @@ from src.api.models import (
     FileLOCResponse,
 )
 from src.metrics.loc import count_loc_in_directory
-from src.metrics.churn import compute_repo_churn
-from src.core.influx import get_client, write_loc_metric, write_churn_metric
+from src.metrics.churn import compute_repo_churn, compute_daily_churn
+from src.core.influx import get_client, write_loc_metric, write_churn_metric, write_daily_churn_metrics
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
 logger = logging.getLogger("repopulse")
@@ -201,10 +201,17 @@ async def analyze_repo(request: Request):
         # 2. Compute LOC
         project_loc = count_loc_in_directory(repo_path)
 
-        # 3. Compute churn
-        logger.info(f"Computing churn for {start_date} → {end_date}")
-        churn = compute_repo_churn(repo_path, start_date, end_date)
-        logger.info(f"Churn result: {churn}")
+        # 3. Compute daily churn
+        logger.info(f"Computing daily churn for {start_date} → {end_date}")
+        daily = compute_daily_churn(repo_path, start_date, end_date)
+        logger.info(f"Daily churn days: {len(daily)}")
+
+        churn_summary = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
+        for day_churn in daily.values():
+            churn_summary["added"] += day_churn["added"]
+            churn_summary["deleted"] += day_churn["deleted"]
+        churn_summary["modified"] = min(churn_summary["added"], churn_summary["deleted"])
+        churn_summary["total"] = churn_summary["added"] + churn_summary["deleted"]
 
         # 4. Write metrics to InfluxDB
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
@@ -215,9 +222,14 @@ async def analyze_repo(request: Request):
             logger.warning(f"Failed to write LOC to InfluxDB: {influx_err}")
 
         try:
-            write_churn_metric(repo_url, start_date, end_date, churn)
+            write_churn_metric(repo_url, start_date, end_date, churn_summary)
         except Exception as influx_err:
             logger.warning(f"Failed to write churn to InfluxDB: {influx_err}")
+
+        try:
+            write_daily_churn_metrics(repo_url, daily)
+        except Exception as influx_err:
+            logger.warning(f"Failed to write daily churn to InfluxDB: {influx_err}")
 
         # 5. Build LOC response
         loc_response = ProjectLOCResponse(
@@ -260,7 +272,8 @@ async def analyze_repo(request: Request):
             start_date=start_date,
             end_date=end_date,
             loc=loc_response,
-            churn=ChurnResponse(**churn),
+            churn=ChurnResponse(**churn_summary),
+            churn_daily={day: ChurnResponse(**vals) for day, vals in daily.items()},
         )
 
     except GitCloneError as e:

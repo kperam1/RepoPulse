@@ -176,4 +176,5 @@ class AnalyzeResponse(BaseModel):
     end_date: Optional[str] = Field(None, description="End date for the analysis in ISO format")
     loc: ProjectLOCResponse
     churn: Optional[ChurnResponse] = None
+    churn_daily: Optional[dict[str, ChurnResponse]] = None
 
