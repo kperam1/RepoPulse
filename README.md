@@ -284,4 +284,4 @@ curl -X POST http://localhost:8080/analyze \
 }
 ```
 
-Churn metrics are also written to InfluxDB (`repo_churn` and `repo_churn_daily` measurements) and are available in Grafana for time-series visualization.
+Churn metrics are also written to InfluxDB (`repo_churn` and `repo_churn_daily` measurements).
