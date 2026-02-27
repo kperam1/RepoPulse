@@ -75,6 +75,7 @@ def _run_git_show(repo_path: str, sha: str) -> str:
         repo_path,
         "show",
         "--numstat",
+        "--first-parent",
         "--format=",
         sha,
     ]
@@ -92,7 +93,11 @@ def _parse_numstat(output: str) -> tuple[int, int]:
     deleted = 0
 
     for line in output.splitlines():
-        parts = line.strip().split("\t")
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = line.split("\t", maxsplit=2)
         if len(parts) < 3:
             continue
 
@@ -102,9 +107,15 @@ def _parse_numstat(output: str) -> tuple[int, int]:
             continue
 
         try:
-            added += int(a_str)
-            deleted += int(d_str)
+            a_val = int(a_str)
+            d_val = int(d_str)
         except ValueError:
             continue
+
+        if a_val < 0 or d_val < 0:
+            continue
+
+        added += a_val
+        deleted += d_val
 
     return added, deleted
