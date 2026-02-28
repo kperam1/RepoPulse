@@ -61,6 +61,15 @@ Once running, the API is at **http://localhost:8080**. Interactive docs at [http
 | GET    | `/workers/health`| Worker pool health (pool size, queue depth, etc.)|
 | POST   | `/metrics/loc`   | Compute LOC for a local repo path                |
 | POST   | `/analyze`       | Clone a GitHub repo, compute LOC, store in InfluxDB |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/latest` | Latest snapshot |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/range` | Snapshots in date range |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/at/{timestamp}` | Point-in-time snapshot |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/commit/{commit_hash}` | Snapshots for commit |
+| GET    | `/metrics/timeseries/commits/{repo_id}` | Commits in date range |
+| GET    | `/metrics/timeseries/commits/{repo_id}/compare` | Compare two commits |
+| GET    | `/metrics/timeseries/trend/{repo_id}` | LOC trend over time |
+| GET    | `/metrics/timeseries/by-branch/{repo_id}` | Latest LOC per branch |
+| GET    | `/metrics/timeseries/change/{repo_id}` | LOC change between timestamps |
 
 ### Testing the `/jobs` endpoint
 
@@ -95,6 +104,19 @@ curl -s http://localhost:8080/jobs/<job_id> | python3 -m json.tool
 ```
 
 After a job completes, the metrics are stored in InfluxDB and show up on the Grafana dashboard automatically.
+
+## Time-Series Metrics
+
+Time-series LOC metrics linked to Git commits. See the endpoint table above for all 9 available queries. Data captured: repo, commit hash, branch, timestamp, LOC breakdown, granularity.
+
+### Testing
+
+All 123 unit tests run during `./build.sh` and pass in ~2 seconds (mocked, no InfluxDB needed).
+
+For integration testing, query the running API:
+```sh
+curl -s "http://localhost:8080/metrics/timeseries/snapshots/test-repo/latest?granularity=project" | python3 -m json.tool
+```
 
 ## Grafana Dashboard
 
