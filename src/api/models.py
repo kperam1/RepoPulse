@@ -96,12 +96,163 @@ class WorkerHealthResponse(BaseModel):
     total_jobs: int
 
 
+class CommitMetadata(BaseModel):
+    """Git commit information linked to metric snapshots."""
+    commit_hash: str = Field(..., description="Full commit SHA-1 hash")
+    commit_timestamp: Optional[str] = Field(None, description="Commit timestamp (ISO 8601)")
+    branch: str = Field(..., description="Branch name")
+    author: Optional[str] = Field(None, description="Commit author")
+
+
+class TimeSeriesMetricSnapshot(BaseModel):
+    """Point-in-time metric snapshot linked to a Git commit."""
+    repo_id: str = Field(..., description="Repository identifier")
+    repo_name: str = Field(..., description="Repository name")
+    commit_hash: str = Field(..., description="Git commit SHA-1 hash for metric linkage")
+    commit_timestamp: Optional[str] = Field(None, description="Timestamp of commit (ISO 8601)")
+    branch: str = Field(..., description="Branch name")
+    snapshot_timestamp: str = Field(..., description="When snapshot was captured (ISO 8601)")
+    granularity: str = Field(..., description="Snapshot granularity: 'project', 'package', or 'file'")
+    snapshot_type: str = Field(default="loc", description="Type of metrics: 'loc' for lines of code")
+    
+    total_loc: int = Field(..., description="Total lines of code")
+    code_loc: int = Field(..., description="Lines of actual code")
+    comment_loc: int = Field(..., description="Lines of comments")
+    blank_loc: int = Field(..., description="Blank lines")
+    
+    file_path: Optional[str] = Field(None, description="File path for file-level snapshots")
+    package_name: Optional[str] = Field(None, description="Package name for package-level snapshots")
+    language: Optional[str] = Field(None, description="Programming language")
+    project_name: Optional[str] = Field(None, description="Project name if applicable")
+
+
+class SnapshotData(BaseModel):
+    total_loc: int = Field(..., description="Total LOC")
+    code_loc: int = Field(..., description="Code LOC")
+    comment_loc: int = Field(..., description="Comment LOC")
+    blank_loc: int = Field(..., description="Blank lines")
+
+
+class SnapshotRecord(BaseModel):
+    timestamp: str = Field(..., description="Snapshot timestamp")
+    repo_id: str = Field(..., description="Repository ID")
+    repo_name: str = Field(..., description="Repository name")
+    commit_hash: str = Field(..., description="Commit hash")
+    branch: str = Field(..., description="Branch")
+    granularity: str = Field(..., description="Granularity")
+    metrics: SnapshotData = Field(..., description="Metrics")
+    file_path: Optional[str] = Field(None, description="File path")
+    package_name: Optional[str] = Field(None, description="Package name")
+
+
+class SnapshotHistoryResponse(BaseModel):
+    """Historical snapshots for a repository within a date range."""
+    repo_id: str = Field(..., description="Repository ID")
+    repo_name: str = Field(..., description="Repository name")
+    granularity: str = Field(..., description="Granularity")
+    start_time: str = Field(..., description="Range start")
+    end_time: str = Field(..., description="Range end")
+    snapshots: list[SnapshotRecord] = Field(..., description="Snapshots")
+    count: int = Field(..., description="Count")
+
+
+class LatestSnapshotResponse(BaseModel):
+    """Latest snapshot for a repository."""
+    repo_id: str = Field(..., description="Repository ID")
+    repo_name: str = Field(..., description="Repository name")
+    latest_snapshot: Optional[SnapshotRecord] = Field(None, description="Latest snapshot")
+
+
+class CommitSnapshotsResponse(BaseModel):
+    repo_id: str = Field(..., description="Repository ID")
+    repo_name: str = Field(..., description="Repository name")
+    commit_hash: str = Field(..., description="Commit hash")
+    snapshots: list[SnapshotRecord] = Field(..., description="Snapshots")
+    count: int = Field(..., description="Count")
+
+
+class SnapshotQueryRequest(BaseModel):
+    repo_id: str = Field(..., description="Repository ID")
+    start_time: str = Field(..., description="Start timestamp")
+    end_time: str = Field(..., description="End timestamp")
+    granularity: Optional[str] = Field(None, description="Granularity filter")
+
+
+class CommitInfo(BaseModel):
+    """Commit information with timestamp and branch."""
+    commit_hash: str = Field(..., description="Commit hash")
+    branch: str = Field(..., description="Branch name")
+    time: str = Field(..., description="Commit timestamp")
+
+
+class CommitListResponse(BaseModel):
+    """Commits in date range."""
+    repo_id: str = Field(..., description="Repository ID")
+    start_time: str = Field(..., description="Range start")
+    end_time: str = Field(..., description="Range end")
+    branch: Optional[str] = Field(None, description="Branch filter")
+    commits: list[CommitInfo] = Field(..., description="Commits")
+    count: int = Field(..., description="Count")
+
+
+class CommitComparisonResponse(BaseModel):
+    """Metrics comparison between two commits."""
+    repo_id: str = Field(..., description="Repository ID")
+    commit1: str = Field(..., description="First commit hash")
+    commit2: str = Field(..., description="Second commit hash")
+    granularity: str = Field(..., description="Granularity level")
+    snapshots_commit1: list[dict] = Field(..., description="Snapshots from commit 1")
+    snapshots_commit2: list[dict] = Field(..., description="Snapshots from commit 2")
+
+
+class TrendPoint(BaseModel):
+    """Single point in LOC trend."""
+    time: str = Field(..., description="Timestamp")
+    total_loc: int = Field(..., description="Total LOC")
+
+
+class LocTrendResponse(BaseModel):
+    """LOC values over time."""
+    repo_id: str = Field(..., description="Repository ID")
+    granularity: str = Field(..., description="Granularity level")
+    start_time: str = Field(..., description="Range start")
+    end_time: str = Field(..., description="Range end")
+    trend: list[TrendPoint] = Field(..., description="Trend points")
+    count: int = Field(..., description="Count")
+
+
+class BranchMetrics(BaseModel):
+    """Latest LOC for a branch."""
+    branch: str = Field(..., description="Branch name")
+    total_loc: int = Field(..., description="Total LOC")
+    updated_at: str = Field(..., description="Latest update time")
+
+
+class BranchMetricsResponse(BaseModel):
+    """Latest LOC by branch."""
+    repo_id: str = Field(..., description="Repository ID")
+    branches: list[BranchMetrics] = Field(..., description="Branch metrics")
+    count: int = Field(..., description="Count")
+
+
+class LocChangeResponse(BaseModel):
+    """LOC change data."""
+    repo_id: str = Field(..., description="Repository ID")
+    timestamp1: str = Field(..., description="Time 1")
+    timestamp2: str = Field(..., description="Time 2")
+    loc_at_time1: int = Field(..., description="LOC at time 1")
+    loc_at_time2: int = Field(..., description="LOC at time 2")
+    absolute_change: int = Field(..., description="Absolute change")
+    percent_change: float = Field(..., description="Percent change")
+    granularity: str = Field(..., description="Granularity")
+
+
 # LOC Metrics Schema
 class LOCMetrics(BaseModel):
     repo_id: str = Field(..., description="Unique identifier for the repository")
     repo_name: str = Field(..., description="Repository name")
     branch: str = Field(..., description="Branch name")
-    commit_hash: str = Field(..., description="Commit hash")
+    commit_hash: Optional[str] = Field(None, description="Git commit hash for metric linkage")
     language: str = Field(..., description="Programming language")
     granularity: str = Field(..., description="Granularity of the metric: 'project', 'package', or 'file'")
     project_name: Optional[str] = Field(None, description="Project name if applicable")
@@ -113,6 +264,7 @@ class LOCMetrics(BaseModel):
     blank_loc: int = Field(..., description="Blank lines")
     collected_at: str = Field(..., description="Timestamp when metrics were collected (ISO format)")
 
+
 class HealthResponse(BaseModel):
     status: str
     service: str
@@ -121,9 +273,6 @@ class HealthResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
-
-
-# LOC response models
 
 
 class FileLOCResponse(BaseModel):
@@ -189,7 +338,7 @@ class LOCRequest(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    """Request body for POST /analyze — clone a public repo and compute metrics."""
+    """Request to clone and analyze a public GitHub repository."""
     repo_url: str = Field(..., description="Public GitHub HTTPS URL to analyse")
 
     @field_validator("repo_url")

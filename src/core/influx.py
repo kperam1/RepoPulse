@@ -1,10 +1,13 @@
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 from src.core.config import Config
+
+logger = logging.getLogger("repopulse.core.influx")
 
 _client: Optional[InfluxDBClient] = None
 
@@ -19,42 +22,429 @@ def get_client() -> InfluxDBClient:
     return _client
 
 
+def _parse_timestamp(ts_str: Optional[str]) -> Optional[datetime]:
+    """Parse ISO 8601 timestamp or return None."""
+    if not ts_str:
+        return None
+    try:
+        if ts_str.endswith("Z"):
+            ts_str = ts_str[:-1] + "+00:00"
+        return datetime.fromisoformat(ts_str)
+    except (ValueError, AttributeError):
+        logger.warning(f"Failed to parse timestamp: {ts_str}")
+        return None
+
+
 def write_loc_metric(loc_metric: dict) -> None:
-    """Write a single LOC metric point to InfluxDB."""
+    """Write LOC metric to InfluxDB."""
     client = get_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
     p = Point("loc_metrics")
-    # tags
+    
     for tag in ("repo_id", "repo_name", "branch", "language", "granularity",
-                "project_name", "package_name", "file_path"):
+                "project_name", "package_name", "file_path", "commit_hash"):
         v = loc_metric.get(tag)
         if v is not None:
             p = p.tag(tag, str(v))
 
-    # fields
     try:
         p = p.field("total_loc", int(loc_metric.get("total_loc", 0)))
         p = p.field("code_loc", int(loc_metric.get("code_loc", 0)))
         p = p.field("comment_loc", int(loc_metric.get("comment_loc", 0)))
         p = p.field("blank_loc", int(loc_metric.get("blank_loc", 0)))
-    except Exception:
-        # fallback if values aren't numeric
+    except (ValueError, TypeError):
+        logger.warning(f"Non-numeric metric values, using defaults: {loc_metric}")
         p = p.field("total_loc", 0).field("code_loc", 0).field("comment_loc", 0).field("blank_loc", 0)
 
-    # timestamp
-    ts = loc_metric.get("collected_at")
-    if ts:
-        try:
-            t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            p = p.time(t, WritePrecision.NS)
-        except Exception:
-            pass
+    collected_at = loc_metric.get("collected_at")
+    if collected_at:
+        ts = _parse_timestamp(collected_at)
+        if ts:
+            p = p.time(ts, WritePrecision.NS)
+    else:
+        p = p.time(datetime.now(timezone.utc), WritePrecision.NS)
 
     write_api.write(bucket=Config.INFLUX_BUCKET, org=Config.INFLUX_ORG, record=p)
+    logger.debug(f"Wrote LOC metric to InfluxDB: {loc_metric.get('repo_name')} @ {loc_metric.get('collected_at', 'now')}")
+
+
+def write_timeseries_snapshot(snapshot: dict) -> None:
+    """Write time-series metric snapshot linked to commit."""
+    client = get_client()
+    write_api = client.write_api(write_options=SYNCHRONOUS)
+
+    p = Point("timeseries_snapshot")
+    
+    required_tags = ("repo_id", "repo_name", "commit_hash", "branch", "granularity")
+    for tag in required_tags:
+        v = snapshot.get(tag)
+        if v is None:
+            raise ValueError(f"Missing required tag for snapshot: {tag}")
+        p = p.tag(tag, str(v))
+    
+    for tag in ("snapshot_type", "file_path", "package_name", "language"):
+        v = snapshot.get(tag)
+        if v is not None:
+            p = p.tag(tag, str(v))
+
+    metrics = snapshot.get("metrics", {})
+    try:
+        p = p.field("total_loc", int(metrics.get("total_loc", 0)))
+        p = p.field("code_loc", int(metrics.get("code_loc", 0)))
+        p = p.field("comment_loc", int(metrics.get("comment_loc", 0)))
+        p = p.field("blank_loc", int(metrics.get("blank_loc", 0)))
+    except (ValueError, TypeError):
+        logger.warning(f"Non-numeric snapshot metrics: {snapshot}")
+        p = p.field("total_loc", 0).field("code_loc", 0).field("comment_loc", 0).field("blank_loc", 0)
+
+    snapshot_ts = snapshot.get("snapshot_timestamp")
+    if snapshot_ts:
+        ts = _parse_timestamp(snapshot_ts)
+        if ts:
+            p = p.time(ts, WritePrecision.NS)
+    else:
+        p = p.time(datetime.now(timezone.utc), WritePrecision.NS)
+
+    write_api.write(bucket=Config.INFLUX_BUCKET, org=Config.INFLUX_ORG, record=p)
+    logger.debug(f"Wrote time-series snapshot: {snapshot.get('repo_name')} @ commit {snapshot.get('commit_hash', '')[:8]}")
 
 
 def query_flux(query: str):
+    """Execute a Flux query against InfluxDB."""
     client = get_client()
     query_api = client.query_api()
     return query_api.query(org=Config.INFLUX_ORG, query=query)
+
+
+def query_timeseries_snapshots_by_repo(
+    repo_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    granularity: Optional[str] = None
+) -> list[dict]:
+    start_iso = start_time.isoformat()
+    end_iso = end_time.isoformat()
+    granularity_filter = f'|> filter(fn: (r) => r.granularity == "{granularity}")' if granularity else ""
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: {start_iso}, stop: {end_iso})
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      {granularity_filter}
+      |> sort(columns: ["_time"], desc: true)
+    '''
+    
+    results = query_flux(flux_query)
+    snapshots = []
+    for table in results:
+        for record in table.records:
+            snapshots.append({
+                "time": record.get_time(),
+                "repo_id": record.values.get("repo_id"),
+                "repo_name": record.values.get("repo_name"),
+                "commit_hash": record.values.get("commit_hash"),
+                "branch": record.values.get("branch"),
+                "granularity": record.values.get("granularity"),
+                "value": record.get_value(),
+                "field": record.get_field(),
+            })
+    return snapshots
+
+
+def query_latest_snapshot(
+    repo_id: str,
+    granularity: str = "project"
+) -> Optional[dict]:
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: -30d)
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "{granularity}")
+      |> sort(columns: ["_time"], desc: true)
+      |> limit(n: 1)
+    '''
+    
+    results = query_flux(flux_query)
+    if not results or not results[0].records:
+        return None
+    
+    record = results[0].records[0]
+    return {
+        "time": record.get_time(),
+        "repo_id": record.values.get("repo_id"),
+        "repo_name": record.values.get("repo_name"),
+        "commit_hash": record.values.get("commit_hash"),
+        "branch": record.values.get("branch"),
+        "granularity": record.values.get("granularity"),
+        "value": record.get_value(),
+        "field": record.get_field(),
+    }
+
+
+def query_snapshot_at_timestamp(
+    repo_id: str,
+    timestamp: datetime,
+    granularity: str = "project"
+) -> Optional[dict]:
+    end_iso = timestamp.isoformat()
+    start_iso = (timestamp - __import__("datetime").timedelta(days=30)).isoformat()
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: {start_iso}, stop: {end_iso})
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "{granularity}")
+      |> sort(columns: ["_time"], desc: true)
+      |> limit(n: 1)
+    '''
+    
+    results = query_flux(flux_query)
+    if not results or not results[0].records:
+        return None
+    
+    record = results[0].records[0]
+    return {
+        "time": record.get_time(),
+        "repo_id": record.values.get("repo_id"),
+        "repo_name": record.values.get("repo_name"),
+        "commit_hash": record.values.get("commit_hash"),
+        "branch": record.values.get("branch"),
+        "granularity": record.values.get("granularity"),
+        "value": record.get_value(),
+        "field": record.get_field(),
+    }
+
+
+def query_snapshots_by_commit(
+    repo_id: str,
+    commit_hash: str
+) -> list[dict]:
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: -90d)
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.commit_hash == "{commit_hash}")
+      |> sort(columns: ["_time"], desc: true)
+    '''
+    
+    results = query_flux(flux_query)
+    snapshots = []
+    for table in results:
+        for record in table.records:
+            snapshots.append({
+                "time": record.get_time(),
+                "repo_id": record.values.get("repo_id"),
+                "repo_name": record.values.get("repo_name"),
+                "commit_hash": record.values.get("commit_hash"),
+                "branch": record.values.get("branch"),
+                "granularity": record.values.get("granularity"),
+                "value": record.get_value(),
+                "field": record.get_field(),
+            })
+    return snapshots
+
+
+def query_commits_in_range(
+    repo_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    branch: Optional[str] = None
+) -> list[dict]:
+    """Get commits with snapshots in date range."""
+    start_iso = start_time.isoformat()
+    end_iso = end_time.isoformat()
+    
+    branch_filter = f'r.branch == "{branch}" and' if branch else ""
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: {start_iso}, stop: {end_iso})
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => {branch_filter} r._field == "total_loc")
+      |> group(columns: ["commit_hash"])
+      |> sort(columns: ["_time"], desc: true)
+    '''
+    
+    results = query_flux(flux_query)
+    commits = []
+    seen = set()
+    
+    for table in results:
+        for record in table.records:
+            commit = record.values.get("commit_hash")
+            if commit and commit not in seen:
+                commits.append({
+                    "commit_hash": commit,
+                    "repo_id": record.values.get("repo_id"),
+                    "branch": record.values.get("branch"),
+                    "time": record.get_time(),
+                })
+                seen.add(commit)
+    return commits
+
+
+def query_compare_commits(
+    repo_id: str,
+    commit1: str,
+    commit2: str,
+    granularity: str = "project"
+) -> dict:
+    """Compare metrics between two commits."""
+    snap1 = query_snapshots_by_commit(repo_id, commit1)
+    snap2 = query_snapshots_by_commit(repo_id, commit2)
+    
+    snap1_filtered = [s for s in snap1 if s.get("granularity") == granularity]
+    snap2_filtered = [s for s in snap2 if s.get("granularity") == granularity]
+    
+    return {
+        "repo_id": repo_id,
+        "commit1": commit1,
+        "commit2": commit2,
+        "granularity": granularity,
+        "snapshots_commit1": snap1_filtered,
+        "snapshots_commit2": snap2_filtered,
+    }
+
+
+def query_loc_trend(
+    repo_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    granularity: str = "project"
+) -> list[dict]:
+    """Get LOC trend over time."""
+    start_iso = start_time.isoformat()
+    end_iso = end_time.isoformat()
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: {start_iso}, stop: {end_iso})
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "{granularity}")
+      |> filter(fn: (r) => r._field == "total_loc")
+      |> sort(columns: ["_time"])
+    '''
+    
+    results = query_flux(flux_query)
+    trend = []
+    
+    for table in results:
+        for record in table.records:
+            trend.append({
+                "time": record.get_time(),
+                "repo_id": record.values.get("repo_id"),
+                "total_loc": record.get_value(),
+                "granularity": granularity,
+            })
+    return trend
+
+
+def query_snapshots_by_granularity(
+    repo_id: str,
+    granularity: str,
+    limit: int = 100
+) -> list[dict]:
+    """Get snapshots at granularity level."""
+    if granularity not in ("project", "package", "file"):
+        return []
+    
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: -90d)
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "{granularity}")
+      |> sort(columns: ["_time"], desc: true)
+      |> limit(n: {limit})
+    '''
+    
+    results = query_flux(flux_query)
+    snapshots = []
+    
+    for table in results:
+        for record in table.records:
+            snapshots.append({
+                "time": record.get_time(),
+                "repo_id": record.values.get("repo_id"),
+                "granularity": record.values.get("granularity"),
+                "commit_hash": record.values.get("commit_hash"),
+                "value": record.get_value(),
+                "field": record.get_field(),
+            })
+    return snapshots
+
+
+def query_current_loc_by_branch(repo_id: str) -> list[dict]:
+    """Get latest LOC per branch."""
+    flux_query = f'''
+    from(bucket: "{Config.INFLUX_BUCKET}")
+      |> range(start: -90d)
+      |> filter(fn: (r) => r._measurement == "timeseries_snapshot")
+      |> filter(fn: (r) => r.repo_id == "{repo_id}")
+      |> filter(fn: (r) => r.granularity == "project")
+      |> group(columns: ["branch"])
+      |> sort(columns: ["_time"], desc: true)
+      |> first()
+    '''
+    
+    results = query_flux(flux_query)
+    branches = []
+    
+    for table in results:
+        for record in table.records:
+            branches.append({
+                "branch": record.values.get("branch"),
+                "time": record.get_time(),
+                "total_loc": record.get_value(),
+                "repo_id": record.values.get("repo_id"),
+            })
+    return branches
+
+
+def query_loc_change_between(
+    repo_id: str,
+    ts1: datetime,
+    ts2: datetime,
+    granularity: str = "project"
+) -> dict:
+    """Calculate LOC change between two times."""
+    snap1 = query_snapshot_at_timestamp(repo_id, ts1, granularity)
+    snap2 = query_snapshot_at_timestamp(repo_id, ts2, granularity)
+    
+    loc1 = 0
+    loc2 = 0
+    
+    if snap1:
+        for table in snap1:
+            for record in table.records:
+                if record.get_field() == "total_loc":
+                    loc1 = record.get_value()
+                    break
+    
+    if snap2:
+        for table in snap2:
+            for record in table.records:
+                if record.get_field() == "total_loc":
+                    loc2 = record.get_value()
+                    break
+    
+    change = loc2 - loc1 if (loc1 and loc2) else 0
+    percent_change = (change / loc1 * 100) if loc1 else 0
+    
+    return {
+        "repo_id": repo_id,
+        "timestamp1": ts1.isoformat(),
+        "timestamp2": ts2.isoformat(),
+        "loc_at_time1": loc1,
+        "loc_at_time2": loc2,
+        "absolute_change": change,
+        "percent_change": round(percent_change, 2),
+        "granularity": granularity,
+    }

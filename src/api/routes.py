@@ -1,9 +1,10 @@
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Query
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -21,9 +22,37 @@ from src.api.models import (
     ModuleLOCResponse,
     FileLOCResponse,
     WorkerHealthResponse,
+    TimeSeriesMetricSnapshot,
+    SnapshotHistoryResponse,
+    LatestSnapshotResponse,
+    CommitSnapshotsResponse,
+    SnapshotRecord,
+    SnapshotData,
+    CommitInfo,
+    CommitListResponse,
+    CommitComparisonResponse,
+    LocTrendResponse,
+    BranchMetricsResponse,
+    BranchMetrics,
+    LocChangeResponse,
 )
 from src.metrics.loc import count_loc_in_directory
-from src.core.influx import get_client, write_loc_metric
+from src.core.influx import (
+    get_client,
+    write_loc_metric,
+    write_timeseries_snapshot,
+    query_timeseries_snapshots_by_repo,
+    query_latest_snapshot,
+    query_snapshot_at_timestamp,
+    query_snapshots_by_commit,
+    query_commits_in_range,
+    query_compare_commits,
+    query_loc_trend,
+    query_snapshots_by_granularity,
+    query_current_loc_by_branch,
+    query_loc_change_between,
+    _parse_timestamp,
+)
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
 logger = logging.getLogger("repopulse")
@@ -231,10 +260,6 @@ async def compute_loc(request: Request):
         ],
     )
 
-
-# --- Analyze Endpoint (clone -> LOC -> InfluxDB) ---
-
-
 @router.post("/analyze", response_model=ProjectLOCResponse, status_code=200)
 async def analyze_repo(request: Request):
     """Clone a public GitHub repo, compute LOC metrics, write to InfluxDB, and return results."""
@@ -261,10 +286,16 @@ async def analyze_repo(request: Request):
         # 2. Compute LOC
         project_loc = count_loc_in_directory(repo_path)
 
-        # 3. Write metrics to InfluxDB
+        # 3. Extract git metadata & Write metrics to InfluxDB
         # Derive a simple repo name from the URL
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
         collected_at = datetime.now(timezone.utc).isoformat()
+        
+        # Get commit information from cloned repo
+        commit_hash = cloner.commit_hash  # Automatically extracted during clone
+        commit_timestamp = GitRepoCloner.get_commit_timestamp(repo_path, commit_hash)
+        
+        logger.info(f"Repository at commit {commit_hash[:8] if commit_hash else 'unknown'}")
 
         # Write project-level metric
         try:
@@ -272,6 +303,7 @@ async def analyze_repo(request: Request):
                 "repo_id": repo_url,
                 "repo_name": repo_name,
                 "branch": "HEAD",
+                "commit_hash": commit_hash,
                 "language": "mixed",
                 "granularity": "project",
                 "project_name": repo_name,
@@ -281,15 +313,38 @@ async def analyze_repo(request: Request):
                 "blank_loc": project_loc.total_blank_lines,
                 "collected_at": collected_at,
             })
+            
+            # Write time-series snapshot for project-level metrics
+            if commit_hash:
+                write_timeseries_snapshot({
+                    "repo_id": repo_url,
+                    "repo_name": repo_name,
+                    "commit_hash": commit_hash,
+                    "commit_timestamp": commit_timestamp,
+                    "branch": "HEAD",
+                    "snapshot_timestamp": collected_at,
+                    "granularity": "project",
+                    "snapshot_type": "loc",
+                    "total_loc": project_loc.total_loc,
+                    "code_loc": project_loc.total_loc,
+                    "comment_loc": project_loc.total_comment_lines,
+                    "blank_loc": project_loc.total_blank_lines,
+                    "project_name": repo_name,
+                    "language": "mixed",
+                })
+            
             # Write per-file metrics
             for f in project_loc.files:
                 ext = os.path.splitext(f.path)[1].lower()
                 lang_map = {".py": "python", ".java": "java", ".ts": "typescript"}
+                lang = lang_map.get(ext, "unknown")
+                
                 write_loc_metric({
                     "repo_id": repo_url,
                     "repo_name": repo_name,
                     "branch": "HEAD",
-                    "language": lang_map.get(ext, "unknown"),
+                    "commit_hash": commit_hash,
+                    "language": lang,
                     "granularity": "file",
                     "project_name": repo_name,
                     "file_path": f.path,
@@ -299,12 +354,34 @@ async def analyze_repo(request: Request):
                     "blank_loc": f.blank_lines,
                     "collected_at": collected_at,
                 })
+                
+                # Write time-series snapshot for file-level metrics
+                if commit_hash:
+                    write_timeseries_snapshot({
+                        "repo_id": repo_url,
+                        "repo_name": repo_name,
+                        "commit_hash": commit_hash,
+                        "commit_timestamp": commit_timestamp,
+                        "branch": "HEAD",
+                        "snapshot_timestamp": collected_at,
+                        "granularity": "file",
+                        "snapshot_type": "loc",
+                        "total_loc": f.loc,
+                        "code_loc": f.loc,
+                        "comment_loc": f.comment_lines,
+                        "blank_loc": f.blank_lines,
+                        "file_path": f.path,
+                        "project_name": repo_name,
+                        "language": lang,
+                    })
+            
             # Write per-package metrics
             for pkg in project_loc.packages:
                 write_loc_metric({
                     "repo_id": repo_url,
                     "repo_name": repo_name,
                     "branch": "HEAD",
+                    "commit_hash": commit_hash,
                     "language": "mixed",
                     "granularity": "package",
                     "project_name": repo_name,
@@ -315,6 +392,27 @@ async def analyze_repo(request: Request):
                     "blank_loc": 0,
                     "collected_at": collected_at,
                 })
+                
+                # Write time-series snapshot for package-level metrics
+                if commit_hash:
+                    write_timeseries_snapshot({
+                        "repo_id": repo_url,
+                        "repo_name": repo_name,
+                        "commit_hash": commit_hash,
+                        "commit_timestamp": commit_timestamp,
+                        "branch": "HEAD",
+                        "snapshot_timestamp": collected_at,
+                        "granularity": "package",
+                        "snapshot_type": "loc",
+                        "total_loc": pkg.loc,
+                        "code_loc": pkg.loc,
+                        "comment_loc": pkg.comment_lines,
+                        "blank_loc": 0,
+                        "package_name": pkg.package,
+                        "project_name": repo_name,
+                        "language": "mixed",
+                    })
+            
             logger.info(f"Wrote {len(project_loc.files) + len(project_loc.packages) + 1} metric points to InfluxDB")
         except Exception as influx_err:
             # InfluxDB write failed but we still return the LOC data
@@ -394,3 +492,356 @@ async def analyze_repo(request: Request):
     finally:
         cloner.cleanup()
 
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/latest", response_model=LatestSnapshotResponse)
+async def get_latest_snapshot(repo_id: str, granularity: str = Query("project")):
+    """Get the most recent metric snapshot for a repository."""
+    try:
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        snapshot_data = query_latest_snapshot(repo_id, granularity)
+        
+        if not snapshot_data:
+            return LatestSnapshotResponse(
+                repo_id=repo_id,
+                repo_name="unknown",
+                latest_snapshot=None
+            )
+        
+        snapshot_record = SnapshotRecord(
+            timestamp=snapshot_data["time"].isoformat() if snapshot_data["time"] else "",
+            repo_id=snapshot_data.get("repo_id", ""),
+            repo_name=snapshot_data.get("repo_name", ""),
+            commit_hash=snapshot_data.get("commit_hash", ""),
+            branch=snapshot_data.get("branch", ""),
+            granularity=snapshot_data.get("granularity", ""),
+            metrics=SnapshotData(
+                total_loc=0,
+                code_loc=0,
+                comment_loc=0,
+                blank_loc=0
+            ),
+            file_path=snapshot_data.get("file_path"),
+            package_name=snapshot_data.get("package_name")
+        )
+        
+        return LatestSnapshotResponse(
+            repo_id=repo_id,
+            repo_name=snapshot_data.get("repo_name", ""),
+            latest_snapshot=snapshot_record
+        )
+    except Exception as e:
+        logger.error(f"Error querying latest snapshot: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/range", response_model=SnapshotHistoryResponse)
+async def get_snapshot_history(
+    repo_id: str,
+    start_time: str = Query(..., description="Start timestamp (ISO 8601)"),
+    end_time: str = Query(..., description="End timestamp (ISO 8601)"),
+    granularity: str = Query("project", description="Granularity filter")
+):
+    try:
+        start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+        
+        if start_dt >= end_dt:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "start_time must be before end_time"}
+            )
+        
+        snapshots_data = query_timeseries_snapshots_by_repo(
+            repo_id,
+            start_dt,
+            end_dt,
+            granularity if granularity != "all" else None
+        )
+        
+        snapshots = []
+        repo_name = "unknown"
+        
+        for snap in snapshots_data:
+            if not repo_name or repo_name == "unknown":
+                repo_name = snap.get("repo_name", "unknown")
+            
+            snapshot_record = SnapshotRecord(
+                timestamp=snap["time"].isoformat() if snap.get("time") else "",
+                repo_id=snap.get("repo_id", ""),
+                repo_name=snap.get("repo_name", ""),
+                commit_hash=snap.get("commit_hash", ""),
+                branch=snap.get("branch", ""),
+                granularity=snap.get("granularity", ""),
+                metrics=SnapshotData(
+                    total_loc=0,
+                    code_loc=0,
+                    comment_loc=0,
+                    blank_loc=0
+                ),
+                file_path=snap.get("file_path"),
+                package_name=snap.get("package_name")
+            )
+            snapshots.append(snapshot_record)
+        
+        return SnapshotHistoryResponse(
+            repo_id=repo_id,
+            repo_name=repo_name,
+            granularity=granularity,
+            start_time=start_time,
+            end_time=end_time,
+            snapshots=snapshots,
+            count=len(snapshots)
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Invalid timestamp format: {e}"}
+        )
+    except Exception as e:
+        logger.error(f"Error querying snapshot history: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/at/{timestamp}", response_model=SnapshotRecord)
+async def get_snapshot_at_time(repo_id: str, timestamp: str):
+    try:
+        target_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        
+        snapshot_data = query_snapshot_at_timestamp(repo_id, target_dt)
+        
+        if not snapshot_data:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": f"No snapshot found for {repo_id} at or before {timestamp}"}
+            )
+        
+        return SnapshotRecord(
+            timestamp=snapshot_data["time"].isoformat() if snapshot_data.get("time") else "",
+            repo_id=snapshot_data.get("repo_id", ""),
+            repo_name=snapshot_data.get("repo_name", ""),
+            commit_hash=snapshot_data.get("commit_hash", ""),
+            branch=snapshot_data.get("branch", ""),
+            granularity=snapshot_data.get("granularity", ""),
+            metrics=SnapshotData(
+                total_loc=0,
+                code_loc=0,
+                comment_loc=0,
+                blank_loc=0
+            ),
+            file_path=snapshot_data.get("file_path"),
+            package_name=snapshot_data.get("package_name")
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Invalid timestamp format: {e}"}
+        )
+    except Exception as e:
+        logger.error(f"Error querying snapshot: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/commit/{commit_hash}", response_model=CommitSnapshotsResponse)
+async def get_snapshots_for_commit(repo_id: str, commit_hash: str):
+    try:
+        snapshots_data = query_snapshots_by_commit(repo_id, commit_hash)
+        
+        snapshots = []
+        repo_name = "unknown"
+        
+        for snap in snapshots_data:
+            if not repo_name or repo_name == "unknown":
+                repo_name = snap.get("repo_name", "unknown")
+            
+            snapshot_record = SnapshotRecord(
+                timestamp=snap["time"].isoformat() if snap.get("time") else "",
+                repo_id=snap.get("repo_id", ""),
+                repo_name=snap.get("repo_name", ""),
+                commit_hash=snap.get("commit_hash", ""),
+                branch=snap.get("branch", ""),
+                granularity=snap.get("granularity", ""),
+                metrics=SnapshotData(
+                    total_loc=0,
+                    code_loc=0,
+                    comment_loc=0,
+                    blank_loc=0
+                ),
+                file_path=snap.get("file_path"),
+                package_name=snap.get("package_name")
+            )
+            snapshots.append(snapshot_record)
+        
+        return CommitSnapshotsResponse(
+            repo_id=repo_id,
+            repo_name=repo_name,
+            commit_hash=commit_hash,
+            snapshots=snapshots,
+            count=len(snapshots)
+        )
+    except Exception as e:
+        logger.error(f"Error querying commit snapshots: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/commits/{repo_id}", response_model=CommitListResponse)
+async def get_commits_in_range(
+    repo_id: str,
+    start_time: str = Query(...),
+    end_time: str = Query(...),
+    branch: Optional[str] = Query(None)
+):
+    try:
+        start = _parse_timestamp(start_time)
+        end = _parse_timestamp(end_time)
+        
+        if not start or not end:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if start >= end:
+            return JSONResponse(status_code=400, content={"detail": "start_time must be before end_time"})
+        
+        commits_data = query_commits_in_range(repo_id, start, end, branch)
+        
+        commits = [
+            CommitInfo(
+                commit_hash=c.get("commit_hash", ""),
+                branch=c.get("branch", ""),
+                time=c["time"].isoformat() if c.get("time") else ""
+            )
+            for c in commits_data
+        ]
+        
+        return CommitListResponse(
+            repo_id=repo_id,
+            start_time=start.isoformat(),
+            end_time=end.isoformat(),
+            branch=branch,
+            commits=commits,
+            count=len(commits)
+        )
+    except Exception as e:
+        logger.error(f"Error querying commits: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/commits/{repo_id}/compare", response_model=CommitComparisonResponse)
+async def compare_commits(
+    repo_id: str,
+    commit1: str = Query(...),
+    commit2: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        comparison = query_compare_commits(repo_id, commit1, commit2, granularity)
+        
+        return CommitComparisonResponse(
+            repo_id=comparison["repo_id"],
+            commit1=comparison["commit1"],
+            commit2=comparison["commit2"],
+            granularity=comparison["granularity"],
+            snapshots_commit1=comparison["snapshots_commit1"],
+            snapshots_commit2=comparison["snapshots_commit2"]
+        )
+    except Exception as e:
+        logger.error(f"Error comparing commits: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/trend/{repo_id}", response_model=LocTrendResponse)
+async def get_loc_trend(
+    repo_id: str,
+    start_time: str = Query(...),
+    end_time: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        start = _parse_timestamp(start_time)
+        end = _parse_timestamp(end_time)
+        
+        if not start or not end:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if start >= end:
+            return JSONResponse(status_code=400, content={"detail": "start_time must be before end_time"})
+        
+        trend_data = query_loc_trend(repo_id, start, end, granularity)
+        
+        trend = [
+            {"time": t["time"].isoformat() if t.get("time") else "", "total_loc": t.get("total_loc", 0)}
+            for t in trend_data
+        ]
+        
+        return LocTrendResponse(
+            repo_id=repo_id,
+            granularity=granularity,
+            start_time=start.isoformat(),
+            end_time=end.isoformat(),
+            trend=trend,
+            count=len(trend)
+        )
+    except Exception as e:
+        logger.error(f"Error querying trend: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/by-branch/{repo_id}", response_model=BranchMetricsResponse)
+async def get_branch_metrics(repo_id: str):
+    try:
+        branch_data = query_current_loc_by_branch(repo_id)
+        
+        branches = [
+            BranchMetrics(
+                branch=b.get("branch", ""),
+                total_loc=b.get("total_loc", 0),
+                updated_at=b["time"].isoformat() if b.get("time") else ""
+            )
+            for b in branch_data
+        ]
+        
+        return BranchMetricsResponse(
+            repo_id=repo_id,
+            branches=branches,
+            count=len(branches)
+        )
+    except Exception as e:
+        logger.error(f"Error querying branch metrics: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/change/{repo_id}", response_model=LocChangeResponse)
+async def get_loc_change(
+    repo_id: str,
+    timestamp1: str = Query(...),
+    timestamp2: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        ts1 = _parse_timestamp(timestamp1)
+        ts2 = _parse_timestamp(timestamp2)
+        
+        if not ts1 or not ts2:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        change = query_loc_change_between(repo_id, ts1, ts2, granularity)
+        
+        return LocChangeResponse(**change)
+    except Exception as e:
+        logger.error(f"Error calculating change: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
