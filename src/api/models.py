@@ -189,8 +189,10 @@ class LOCRequest(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    """Request body for POST /analyze — clone a public repo and compute metrics."""
+    """Request body for the /analyze endpoint."""
     repo_url: str = Field(..., description="Public GitHub HTTPS URL to analyse")
+    start_date: Optional[str] = Field(None, description="Start date for the analysis in ISO format")
+    end_date: Optional[str] = Field(None, description="End date for the analysis in ISO format")
 
     @field_validator("repo_url")
     @classmethod
@@ -203,4 +205,22 @@ class AnalyzeRequest(BaseModel):
                 "repo_url must be a valid GitHub URL (e.g. https://github.com/owner/repo)"
             )
         return v
+
+
+class ChurnResponse(BaseModel):
+    """Churn metrics for a date range."""
+    added: int
+    deleted: int
+    modified: int
+    total: int
+
+
+class AnalyzeResponse(BaseModel):
+    """Full response for the /analyze endpoint including LOC and churn."""
+    repo_url: str
+    start_date: Optional[str] = Field(None, description="Start date for the analysis in ISO format")
+    end_date: Optional[str] = Field(None, description="End date for the analysis in ISO format")
+    loc: ProjectLOCResponse
+    churn: Optional[ChurnResponse] = None
+    churn_daily: Optional[dict[str, ChurnResponse]] = None
 

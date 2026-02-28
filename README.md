@@ -224,3 +224,85 @@ Both `loc` (raw) and `weighted_loc` are returned in every API response at file, 
 | `repopulse-dev`     | local build              | `http://localhost:8080`  | FastAPI backend         |
 | `repopulse-influx`  | `influxdb:2.8`           | `http://localhost:8086`  | Time-series DB          |
 | `repopulse-grafana` | `grafana/grafana:11.5.1` | `http://localhost:3000`  | Dashboard visualization |
+
+## Code Churn Metric
+
+Code churn measures the volume of change in a codebase over time. RepoPulse computes four values per commit:
+
+| Metric     | Definition                              |
+|------------|-----------------------------------------|
+| `added`    | Total lines added across all files      |
+| `deleted`  | Total lines deleted across all files    |
+| `modified` | `min(added, deleted)` — lines changed in place |
+| `total`    | `added + deleted` — overall churn       |
+
+### How RepoPulse computes churn
+
+1. Clones the GitHub repository (full clone to preserve commit history)
+2. Extracts commit history within the requested date range using `git log`
+3. For each commit, runs `git show --numstat --first-parent` to get per-file add/delete counts
+4. Skips binary files (reported as `-` in numstat output)
+5. Aggregates results into:
+   - **churn** — totals across all commits in the range
+   - **churn_daily** — totals grouped by date (one entry per day)
+
+### `/analyze` response
+
+The `/analyze` endpoint now returns both LOC and churn data. The `start_date` and `end_date` fields are optional — if omitted, they default to the last 7 days ending today (UTC).
+
+**With date range (Linux / macOS):**
+
+```sh
+curl -X POST http://localhost:8080/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git",
+    "start_date": "2025-06-01",
+    "end_date": "2025-06-07"
+  }'
+```
+
+**Without dates (defaults to last 7 days):**
+
+```sh
+curl -X POST http://localhost:8080/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git"}'
+```
+
+**Example response (trimmed):**
+
+```json
+{
+  "repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git",
+  "start_date": "2025-06-01",
+  "end_date": "2025-06-07",
+  "loc": {
+    "project_root": "/tmp/...",
+    "total_loc": 1958,
+    "total_files": 3
+  },
+  "churn": {
+    "added": 142,
+    "deleted": 38,
+    "modified": 38,
+    "total": 180
+  },
+  "churn_daily": {
+    "2025-06-02": {
+      "added": 80,
+      "deleted": 20,
+      "modified": 20,
+      "total": 100
+    },
+    "2025-06-05": {
+      "added": 62,
+      "deleted": 18,
+      "modified": 18,
+      "total": 80
+    }
+  }
+}
+```
+
+Churn metrics are also written to InfluxDB (`repo_churn` and `repo_churn_daily` measurements).
