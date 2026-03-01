@@ -10,6 +10,7 @@ from typing import Optional
 
 from src.core.git_clone import GitRepoCloner, GitCloneError
 from src.metrics.loc import count_loc_in_directory
+from src.metrics.churn import compute_repo_churn
 
 logger = logging.getLogger("repopulse.pool")
 
@@ -208,7 +209,17 @@ class WorkerPool:
                 "total_blank_lines": project_loc.total_blank_lines,
                 "total_excluded_lines": project_loc.total_excluded_lines,
                 "total_comment_lines": project_loc.total_comment_lines,
+                "total_weighted_loc": project_loc.total_weighted_loc,
             }
+
+            # compute churn (best-effort; requires a .git directory)
+            try:
+                churn = compute_repo_churn(repo_path, "1970-01-01", "2100-01-01")
+                record.result["churn"] = churn
+            except Exception as churn_err:
+                logger.warning(f"[{record.job_id}] churn computation failed: {churn_err}")
+                record.result["churn"] = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
+
             record.status = "completed"
             logger.info(f"[{record.job_id}] completed — {project_loc.total_loc} LOC")
 

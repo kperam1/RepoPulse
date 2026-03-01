@@ -50,9 +50,8 @@ class JobRequest(BaseModel):
             # Also accept a leading '/' on Windows (tests use this form).
             if not (os.path.isabs(v) or v.startswith("/")):
                 raise ValueError("local_path must be an absolute path")
-            # Normalize and disallow any '..' path parts
-            norm = os.path.normpath(v)
-            if ".." in norm.split(os.path.sep):
+            # Disallow any '..' path parts in the raw input
+            if ".." in v.split("/") or ".." in v.split(os.path.sep):
                 raise ValueError("local_path must not contain '..'")
         return v
 
@@ -223,4 +222,41 @@ class AnalyzeResponse(BaseModel):
     loc: ProjectLOCResponse
     churn: Optional[ChurnResponse] = None
     churn_daily: Optional[dict[str, ChurnResponse]] = None
+
+
+# --- Job Results models (GET /jobs/{job_id}/results) ---
+
+
+class LOCResultSummary(BaseModel):
+    """LOC metrics summary returned in job results."""
+    total_loc: int
+    total_files: int
+    total_blank_lines: int
+    total_excluded_lines: int
+    total_comment_lines: int
+    total_weighted_loc: float
+
+
+class ChurnResultSummary(BaseModel):
+    """Churn metrics summary returned in job results."""
+    added: int
+    deleted: int
+    modified: int
+    total: int
+
+
+class ResultMetadata(BaseModel):
+    """Metadata about a job result."""
+    repository: str = Field(..., description="Repository URL or local path analysed")
+    analysed_at: str = Field(..., description="ISO timestamp when the analysis completed")
+    scope: str = Field(default="project", description="Granularity of the result")
+
+
+class JobResultsResponse(BaseModel):
+    """Structured metric results for a completed job."""
+    job_id: str
+    status: str
+    metadata: ResultMetadata
+    loc: LOCResultSummary
+    churn: ChurnResultSummary
 

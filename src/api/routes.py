@@ -11,17 +11,21 @@ from src.api.models import (
     AnalyzeRequest,
     AnalyzeResponse,
     ChurnResponse,
+    ChurnResultSummary,
     ErrorResponse,
     HealthResponse,
     JobDetailResponse,
     JobRequest,
     JobResponse,
+    JobResultsResponse,
     JobStatus,
     LOCRequest,
+    LOCResultSummary,
     ProjectLOCResponse,
     PackageLOCResponse,
     ModuleLOCResponse,
     FileLOCResponse,
+    ResultMetadata,
     WorkerHealthResponse,
 )
 from src.metrics.loc import count_loc_in_directory
@@ -115,6 +119,63 @@ async def get_job(job_id: str, request: Request):
     return JobDetailResponse(**record.to_dict())
 
 
+@router.get("/jobs/{job_id}/results", response_model=JobResultsResponse)
+async def get_job_results(job_id: str, request: Request):
+    """Retrieve the formatted metric results (LOC + Churn) for a completed job.
+
+    Results are cached in the worker pool's in-memory job store,
+    so repeated calls return instantly without re-computation.
+    """
+    pool = request.app.state.worker_pool
+    record = pool.get_job(job_id)
+
+    if record is None:
+        return JSONResponse(status_code=404, content={"detail": "Job not found"})
+
+    if record.status != "completed":
+        return JSONResponse(
+            status_code=200,
+            content={
+                "job_id": record.job_id,
+                "status": record.status,
+                "message": f"Job is {record.status}. Results are not available yet.",
+            },
+        )
+
+    result = record.result or {}
+    churn = result.get("churn", {})
+
+    metadata = ResultMetadata(
+        repository=record.repo_url or record.local_path or "unknown",
+        analysed_at=record.completed_at or "",
+        scope="project",
+    )
+
+    loc_summary = LOCResultSummary(
+        total_loc=result.get("total_loc", 0),
+        total_files=result.get("total_files", 0),
+        total_blank_lines=result.get("total_blank_lines", 0),
+        total_excluded_lines=result.get("total_excluded_lines", 0),
+        total_comment_lines=result.get("total_comment_lines", 0),
+        total_weighted_loc=result.get("total_weighted_loc", 0.0),
+    )
+
+    churn_summary = ChurnResultSummary(
+        added=churn.get("added", 0),
+        deleted=churn.get("deleted", 0),
+        modified=churn.get("modified", 0),
+        total=churn.get("total", 0),
+    )
+
+    return JobResultsResponse(
+        job_id=record.job_id,
+        status=record.status,
+        metadata=metadata,
+        loc=loc_summary,
+        churn=churn_summary,
+    )
+
+
 @router.get("/jobs", response_model=list[JobDetailResponse])
 async def list_jobs(request: Request):
     """List all jobs with their statuses."""
@@ -203,6 +264,7 @@ async def compute_loc(request: Request):
                         loc=p.loc,
                         file_count=p.file_count,
                         comment_lines=p.comment_lines,
+                        weighted_loc=p.weighted_loc,
                         files=[
                             FileLOCResponse(
                                 path=f.path,
@@ -211,6 +273,7 @@ async def compute_loc(request: Request):
                                 blank_lines=f.blank_lines,
                                 excluded_lines=f.excluded_lines,
                                 comment_lines=f.comment_lines,
+                                weighted_loc=f.weighted_loc,
                             )
                             for f in p.files
                         ],
@@ -340,11 +403,12 @@ async def analyze_repo(request: Request):
                             loc=p.loc,
                             file_count=p.file_count,
                             comment_lines=p.comment_lines,
+                            weighted_loc=p.weighted_loc,
                             files=[
                                 FileLOCResponse(
                                     path=f.path, total_lines=f.total_lines, loc=f.loc,
                                     blank_lines=f.blank_lines, excluded_lines=f.excluded_lines,
-                                    comment_lines=f.comment_lines,
+                                    comment_lines=f.comment_lines, weighted_loc=f.weighted_loc,
                                 )
                                 for f in p.files
                             ],
