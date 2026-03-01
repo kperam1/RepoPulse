@@ -76,6 +76,7 @@ class JobDetailResponse(BaseModel):
     """Full job status including results (returned by GET /jobs/{job_id})."""
     job_id: str
     status: str
+    progress: int = 0
     repo_url: Optional[str] = None
     local_path: Optional[str] = None
     created_at: Optional[str] = None
