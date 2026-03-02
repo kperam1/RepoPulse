@@ -459,6 +459,12 @@ class TestDirectoryScanning:
         assert project.total_loc == sum(p.loc for p in project.packages)
         assert project.total_comment_lines == sum(p.comment_lines for p in project.packages)
 
+    def test_java_project_modules(self):
+        project = count_loc_in_directory(_sample_path("java_project"))
+        assert len(project.modules) == 1
+        assert project.total_loc == sum(m.loc for m in project.modules)
+        assert project.total_loc == sum(f.loc for f in project.files)
+
     def test_python_project_has_comment_lines(self):
         project = count_loc_in_directory(_sample_path("python_project"))
         assert project.total_comment_lines > 0  # docstrings present
@@ -513,6 +519,19 @@ class TestLOCEndpoint:
         # every file response must include comment_lines
         for f in data["files"]:
             assert "comment_lines" in f
+
+    def test_loc_endpoint_includes_modules(self):
+        abs_path = os.path.abspath(_sample_path("java_project"))
+        response = client.post("/metrics/loc", json={"repo_path": abs_path})
+        assert response.status_code == 200
+        data = response.json()
+        assert "modules" in data
+        assert isinstance(data["modules"], list)
+        assert len(data["modules"]) >= 1
+        for m in data["modules"]:
+            assert "module" in m
+            assert "loc" in m
+            assert "packages" in m
 
     def test_loc_endpoint_invalid_path(self):
         response = client.post("/metrics/loc", json={"repo_path": "/nonexistent/path/to/repo"})

@@ -10,6 +10,8 @@ from pydantic import ValidationError
 
 from src.api.models import (
     AnalyzeRequest,
+    AnalyzeResponse,
+    ChurnResponse,
     ErrorResponse,
     HealthResponse,
     JobDetailResponse,
@@ -19,6 +21,7 @@ from src.api.models import (
     LOCRequest,
     ProjectLOCResponse,
     PackageLOCResponse,
+    ModuleLOCResponse,
     FileLOCResponse,
     WorkerHealthResponse,
     TimeSeriesMetricSnapshot,
@@ -215,6 +218,36 @@ async def compute_loc(request: Request):
             )
             for pkg in project_loc.packages
         ],
+        modules=[
+            ModuleLOCResponse(
+                module=m.module,
+                loc=m.loc,
+                package_count=len(m.packages),
+                file_count=m.file_count,
+                comment_lines=m.comment_lines,
+                packages=[
+                    PackageLOCResponse(
+                        package=p.package,
+                        loc=p.loc,
+                        file_count=p.file_count,
+                        comment_lines=p.comment_lines,
+                        files=[
+                            FileLOCResponse(
+                                path=f.path,
+                                total_lines=f.total_lines,
+                                loc=f.loc,
+                                blank_lines=f.blank_lines,
+                                excluded_lines=f.excluded_lines,
+                                comment_lines=f.comment_lines,
+                            )
+                            for f in p.files
+                        ],
+                    )
+                    for p in m.packages
+                ],
+            )
+            for m in project_loc.modules
+        ],
         files=[
             FileLOCResponse(
                 path=f.path,
@@ -231,7 +264,7 @@ async def compute_loc(request: Request):
 
 @router.post("/analyze", response_model=ProjectLOCResponse, status_code=200)
 async def analyze_repo(request: Request):
-    """Clone a public GitHub repo, compute LOC metrics, write to InfluxDB, and return results."""
+    """Clone a public GitHub repo, compute LOC and churn metrics, write to InfluxDB, and return results."""
     body = await request.json()
     logger.info(f"Analyze request: {body}")
 
@@ -244,12 +277,18 @@ async def analyze_repo(request: Request):
         return JSONResponse(status_code=400, content={"detail": messages})
 
     repo_url = analyze_request.repo_url
+
+    # Determine date range — default to last 7 days if not provided
+    today = datetime.now(timezone.utc).date()
+    end_date = analyze_request.end_date or today.isoformat()
+    start_date = analyze_request.start_date or (today - timedelta(days=7)).isoformat()
+
     cloner = GitRepoCloner()
 
     try:
-        # 1. Clone the repo
+        # 1. Clone the repo (full clone needed for commit history)
         logger.info(f"Cloning {repo_url} …")
-        repo_path = cloner.clone(repo_url, shallow=True)
+        repo_path = cloner.clone(repo_url, shallow=False)
         logger.info(f"Clone complete → {repo_path}")
 
         # 2. Compute LOC
@@ -266,7 +305,6 @@ async def analyze_repo(request: Request):
         
         logger.info(f"Repository at commit {commit_hash[:8] if commit_hash else 'unknown'}")
 
-        # Write project-level metric
         try:
             write_loc_metric({
                 "repo_id": repo_url,
@@ -384,11 +422,15 @@ async def analyze_repo(request: Request):
             
             logger.info(f"Wrote {len(project_loc.files) + len(project_loc.packages) + 1} metric points to InfluxDB")
         except Exception as influx_err:
-            # InfluxDB write failed but we still return the LOC data
-            logger.warning(f"InfluxDB write failed (metrics still returned): {influx_err}")
+            logger.warning(f"Failed to write churn to InfluxDB: {influx_err}")
 
-        # 4. Build response
-        response = ProjectLOCResponse(
+        try:
+            write_daily_churn_metrics(repo_url, daily)
+        except Exception as influx_err:
+            logger.warning(f"Failed to write daily churn to InfluxDB: {influx_err}")
+
+        # 5. Build LOC response
+        loc_response = ProjectLOCResponse(
             project_root=repo_path,
             total_loc=project_loc.total_loc,
             total_files=project_loc.total_files,
@@ -414,6 +456,33 @@ async def analyze_repo(request: Request):
                 )
                 for pkg in project_loc.packages
             ],
+            modules=[
+                ModuleLOCResponse(
+                    module=m.module,
+                    loc=m.loc,
+                    package_count=len(m.packages),
+                    file_count=m.file_count,
+                    comment_lines=m.comment_lines,
+                    packages=[
+                        PackageLOCResponse(
+                            package=p.package,
+                            loc=p.loc,
+                            file_count=p.file_count,
+                            comment_lines=p.comment_lines,
+                            files=[
+                                FileLOCResponse(
+                                    path=f.path, total_lines=f.total_lines, loc=f.loc,
+                                    blank_lines=f.blank_lines, excluded_lines=f.excluded_lines,
+                                    comment_lines=f.comment_lines,
+                                )
+                                for f in p.files
+                            ],
+                        )
+                        for p in m.packages
+                    ],
+                )
+                for m in project_loc.modules
+            ],
             files=[
                 FileLOCResponse(
                     path=f.path, total_lines=f.total_lines, loc=f.loc,
@@ -423,7 +492,16 @@ async def analyze_repo(request: Request):
                 for f in project_loc.files
             ],
         )
-        return response
+
+        # 6. Return combined response
+        return AnalyzeResponse(
+            repo_url=repo_url,
+            start_date=start_date,
+            end_date=end_date,
+            loc=loc_response,
+            churn=ChurnResponse(**churn_summary),
+            churn_daily={day: ChurnResponse(**vals) for day, vals in daily.items()},
+        )
 
     except GitCloneError as e:
         logger.error(f"Clone failed for {repo_url}: {e}")

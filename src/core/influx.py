@@ -13,7 +13,6 @@ _client: Optional[InfluxDBClient] = None
 
 
 def get_client() -> InfluxDBClient:
-    """Return a singleton InfluxDB client."""
     global _client
     if _client is None:
         if not Config.INFLUX_TOKEN:
@@ -108,6 +107,42 @@ def write_timeseries_snapshot(snapshot: dict) -> None:
 
     write_api.write(bucket=Config.INFLUX_BUCKET, org=Config.INFLUX_ORG, record=p)
     logger.debug(f"Wrote time-series snapshot: {snapshot.get('repo_name')} @ commit {snapshot.get('commit_hash', '')[:8]}")
+
+
+def write_churn_metric(repo_url: str, start_date: str, end_date: str, churn: dict) -> None:
+    client = get_client()
+    write_api = client.write_api(write_options=SYNCHRONOUS)
+
+    point = (
+        Point("repo_churn")
+        .tag("repo_url", repo_url)
+        .tag("start_date", start_date)
+        .tag("end_date", end_date)
+        .field("added", churn["added"])
+        .field("deleted", churn["deleted"])
+        .field("modified", churn["modified"])
+        .field("total", churn["total"])
+    )
+
+    write_api.write(bucket=Config.INFLUX_BUCKET, org=Config.INFLUX_ORG, record=point)
+
+
+def write_daily_churn_metrics(repo_url: str, daily: dict[str, dict[str, int]]) -> None:
+    client = get_client()
+    write_api = client.write_api(write_options=SYNCHRONOUS)
+
+    for date_str, churn in daily.items():
+        ts = datetime.fromisoformat(f"{date_str}T00:00:00+00:00")
+        point = (
+            Point("repo_churn_daily")
+            .tag("repo_url", repo_url)
+            .field("added", churn["added"])
+            .field("deleted", churn["deleted"])
+            .field("modified", churn["modified"])
+            .field("total", churn["total"])
+            .time(ts, WritePrecision.NS)
+        )
+        write_api.write(bucket=Config.INFLUX_BUCKET, org=Config.INFLUX_ORG, record=point)
 
 
 def query_flux(query: str):

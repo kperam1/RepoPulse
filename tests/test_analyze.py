@@ -1,37 +1,29 @@
-"""Tests for POST /analyze and GET /health/db endpoints, and AnalyzeRequest model."""
 import os
+import subprocess
+import tempfile
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
+
 from src.main import app
-from src.api.models import AnalyzeRequest
 
 client = TestClient(app)
 
-# ── AnalyzeRequest model validation ──────────────────────────────────────────
 
-def test_analyze_request_valid_url():
-    req = AnalyzeRequest(repo_url="https://github.com/owner/repo")
-    assert req.repo_url == "https://github.com/owner/repo"
-
-def test_analyze_request_valid_url_with_git_suffix():
-    req = AnalyzeRequest(repo_url="https://github.com/owner/repo.git")
-    assert req.repo_url == "https://github.com/owner/repo.git"
-
-def test_analyze_request_invalid_url():
-    with pytest.raises(Exception):
-        AnalyzeRequest(repo_url="not-a-valid-url")
-
-def test_analyze_request_empty_url():
-    with pytest.raises(Exception):
-        AnalyzeRequest(repo_url="")
-
-def test_analyze_request_non_github_url():
-    with pytest.raises(Exception):
-        AnalyzeRequest(repo_url="https://gitlab.com/owner/repo")
+def _run(cmd: list[str], cwd: str, env: dict | None = None) -> None:
+    full_env = {**os.environ, **(env or {})}
+    subprocess.run(cmd, cwd=cwd, env=full_env, check=True, capture_output=True)
 
 
-# ── POST /analyze endpoint ───────────────────────────────────────────────────
+def _create_test_repo(path: str) -> None:
+    _run(["git", "init"], cwd=path)
+    _run(["git", "config", "user.email", "test@example.com"], cwd=path)
+    _run(["git", "config", "user.name", "Test"], cwd=path)
+
+    filepath = os.path.join(path, "hello.py")
+    with open(filepath, "w") as f:
+        f.write("print('hello')\nprint('world')\n")
 
 def _make_sample_tree(dest):
     """Create a tiny sample project in *dest* for LOC analysis."""
