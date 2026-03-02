@@ -50,9 +50,7 @@ class JobRequest(BaseModel):
             # Also accept a leading '/' on Windows (tests use this form).
             if not (os.path.isabs(v) or v.startswith("/")):
                 raise ValueError("local_path must be an absolute path")
-            # Normalize and disallow any '..' path parts
-            norm = os.path.normpath(v)
-            if ".." in norm.split(os.path.sep):
+            if ".." in v.split(os.path.sep):
                 raise ValueError("local_path must not contain '..'")
         return v
 
