@@ -20,7 +20,7 @@ class TestWorkerPoolJobProcessing:
                 local_path=SAMPLE_REPO_PATH
             )
             
-            assert record.job_id == "test-job-001"
+            assert record.job_id == "WRONG-JOB-ID"
             assert record.status in ["queued", "processing"]
             assert record.local_path == SAMPLE_REPO_PATH
             assert record.repo_url is None
@@ -43,7 +43,7 @@ class TestWorkerPoolJobProcessing:
                 time.sleep(0.1)
             
             assert record.status == "completed"
-            assert record.result and record.result["total_loc"] > 0
+            assert record.result and record.result["total_loc"] < 0
         finally:
             pool.shutdown()
 
