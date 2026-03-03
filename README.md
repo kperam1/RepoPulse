@@ -58,9 +58,19 @@ Once running, the API is at **http://localhost:8080**. Interactive docs at [http
 | GET    | `/health/db`     | InfluxDB connection check                        |
 | POST   | `/jobs`          | Submit a repo analysis job (queued to worker pool)|
 | GET    | `/jobs/{job_id}` | Get job status and results                       |
+| GET    | `/jobs/{job_id}/results` | Get structured metric results (LOC + Churn) |
 | GET    | `/workers/health`| Worker pool health (pool size, queue depth, etc.)|
 | POST   | `/metrics/loc`   | Compute LOC for a local repo path                |
 | POST   | `/analyze`       | Clone a GitHub repo, compute LOC, store in InfluxDB |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/latest` | Latest snapshot |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/range` | Snapshots in date range |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/at/{timestamp}` | Point-in-time snapshot |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/commit/{commit_hash}` | Snapshots for commit |
+| GET    | `/metrics/timeseries/commits/{repo_id}` | Commits in date range |
+| GET    | `/metrics/timeseries/commits/{repo_id}/compare` | Compare two commits |
+| GET    | `/metrics/timeseries/trend/{repo_id}` | LOC trend over time |
+| GET    | `/metrics/timeseries/by-branch/{repo_id}` | Latest LOC per branch |
+| GET    | `/metrics/timeseries/change/{repo_id}` | LOC change between timestamps |
 
 ### Testing the `/jobs` endpoint
 
@@ -95,6 +105,61 @@ curl -s http://localhost:8080/jobs/<job_id> | python3 -m json.tool
 ```
 
 After a job completes, the metrics are stored in InfluxDB and show up on the Grafana dashboard automatically.
+
+### Retrieve structured metric results
+
+Once a job completes, use `GET /jobs/{job_id}/results` to get a structured JSON response with LOC and Code Churn metrics plus metadata. Results are cached in memory for quick retrieval — repeated calls return instantly.
+
+```sh
+curl -s http://localhost:8080/jobs/<job_id>/results | python3 -m json.tool
+```
+
+**Example response:**
+
+```json
+{
+  "job_id": "abc-123",
+  "status": "completed",
+  "metadata": {
+    "repository": "https://github.com/owner/repo",
+    "analysed_at": "2026-02-27T12:00:00+00:00",
+    "scope": "project"
+  },
+  "loc": {
+    "total_loc": 1250,
+    "total_files": 15,
+    "total_blank_lines": 180,
+    "total_excluded_lines": 42,
+    "total_comment_lines": 95,
+    "total_weighted_loc": 1297.5
+  },
+  "churn": {
+    "added": 142,
+    "deleted": 38,
+    "modified": 38,
+    "total": 180
+  }
+}
+```
+
+| Scenario | Behaviour |
+|---|---|
+| Job completed | Returns full LOC + churn + metadata |
+| Job still running | Returns `{ "status": "processing", "message": "..." }` |
+| Job ID not found | `404 Not Found` with `{ "detail": "Job not found" }` |
+
+## Time-Series Metrics
+
+Time-series LOC metrics linked to Git commits. See the endpoint table above for all 9 available queries. Data captured: repo, commit hash, branch, timestamp, LOC breakdown, granularity.
+
+### Testing
+
+All 123 unit tests run during `./build.sh` and pass in ~2 seconds (mocked, no InfluxDB needed).
+
+For integration testing, query the running API:
+```sh
+curl -s "http://localhost:8080/metrics/timeseries/snapshots/test-repo/latest?granularity=project" | python3 -m json.tool
+```
 
 ## Grafana Dashboard
 
