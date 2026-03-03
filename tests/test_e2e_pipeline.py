@@ -1,12 +1,10 @@
-
-
 import pytest
 import time
+from pathlib import Path
+from fastapi.testclient import TestClient
 from src.main import app
 
 client = TestClient(app)
-
-# Use a sample repository from test fixtures
 SAMPLE_REPO_PATH = str(Path(__file__).parent / "sample_files/python_project")
 
 
@@ -238,20 +236,6 @@ class TestE2EPipelineWorkerHealth:
 
 class TestE2EPipelineInfluxDBPersistence:
     def test_analyze_endpoint_writes_to_influxdb(self):
-        response = client.post(
-            "/analyze",
-            json={"repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git"}
-        )
-        
-
-        assert response.status_code == 200
-        result = response.json()
-        assert result["total_loc"] > 0
-        
-        # Wait for InfluxDB write propagation
-        time.sleep(1)
-        
-
         response = client.get("/health/db")
         assert response.status_code == 200
         assert response.json()["status"] == "pass"

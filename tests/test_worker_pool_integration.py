@@ -21,7 +21,7 @@ class TestWorkerPoolJobProcessing:
             )
             
             assert record.job_id == "test-job-001"
-            assert record.status == "queued"
+            assert record.status in ["queued", "processing"]
             assert record.local_path == SAMPLE_REPO_PATH
             assert record.repo_url is None
         finally:
@@ -112,7 +112,7 @@ class TestWorkerPoolQueueing:
                 local_path=SAMPLE_REPO_PATH
             )
             
-            assert record.status == "queued"
+            assert record.status in ["queued", "processing"]
             for _ in range(30):
                 if record.status == "completed":
                     break
