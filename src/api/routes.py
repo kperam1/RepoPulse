@@ -231,6 +231,7 @@ async def compute_loc(request: Request):
                         loc=p.loc,
                         file_count=p.file_count,
                         comment_lines=p.comment_lines,
+                        weighted_loc=p.weighted_loc,
                         files=[
                             FileLOCResponse(
                                 path=f.path,
@@ -239,6 +240,7 @@ async def compute_loc(request: Request):
                                 blank_lines=f.blank_lines,
                                 excluded_lines=f.excluded_lines,
                                 comment_lines=f.comment_lines,
+                                weighted_loc=f.weighted_loc,
                             )
                             for f in p.files
                         ],
@@ -469,11 +471,12 @@ async def analyze_repo(request: Request):
                             loc=p.loc,
                             file_count=p.file_count,
                             comment_lines=p.comment_lines,
+                            weighted_loc=p.weighted_loc,
                             files=[
                                 FileLOCResponse(
                                     path=f.path, total_lines=f.total_lines, loc=f.loc,
                                     blank_lines=f.blank_lines, excluded_lines=f.excluded_lines,
-                                    comment_lines=f.comment_lines,
+                                    comment_lines=f.comment_lines, weighted_loc=f.weighted_loc,
                                 )
                                 for f in p.files
                             ],
