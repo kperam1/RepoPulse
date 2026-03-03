@@ -37,10 +37,14 @@ fail()    { echo -e "${RED}[FAIL]${NC}  $*"; exit 1; }
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 SKIP_TESTS=false
+UNIT_TESTS_ONLY=false
+INTEGRATION_TESTS_ONLY=false
 COMMAND="build"
 for arg in "$@"; do
   case "$arg" in
-    --skip-tests) SKIP_TESTS=true ;;
+    --skip-tests)           SKIP_TESTS=true ;;
+    --unit-tests)           UNIT_TESTS_ONLY=true ;;
+    --integration-tests)    INTEGRATION_TESTS_ONLY=true ;;
     stop)    COMMAND="stop" ;;
     restart) COMMAND="restart" ;;
     -h|--help)
@@ -52,8 +56,10 @@ for arg in "$@"; do
       echo "  restart      Stop containers, rebuild, test, and start"
       echo ""
       echo "Options:"
-      echo "  --skip-tests   Build and start without running the test suite"
-      echo "  -h, --help     Show this help message"
+      echo "  --skip-tests           Build and start without running the test suite"
+      echo "  --unit-tests           Run only unit tests (exclude integration tests)"
+      echo "  --integration-tests    Run only integration tests (fail-fast on failure)"
+      echo "  -h, --help             Show this help message"
       exit 0
       ;;
     *)
@@ -89,7 +95,6 @@ fi
 
 # ── Step 1: Pre-flight checks ────────────────────────────────────────────────
 info "Step 1/5 — Checking prerequisites …"
-
 command -v git >/dev/null 2>&1 || fail "git is not installed. Please install git first."
 check_docker
 
@@ -112,8 +117,34 @@ if [ "$SKIP_TESTS" = true ]; then
   warn "Step 4/5 — Tests skipped (--skip-tests flag)."
 else
   info "Step 4/5 — Running test suite inside container …"
-  docker compose run --rm api python -m pytest tests/ -v
-  success "All tests passed."
+  
+  if [ "$INTEGRATION_TESTS_ONLY" = true ]; then
+    info "Running INTEGRATION TESTS ONLY (fail-fast enabled) …"
+    docker compose run --rm api python -m pytest \
+      tests/test_worker_pool_integration.py \
+      tests/test_influx_integration.py \
+      tests/test_e2e_pipeline.py \
+      -v --tb=short --strict-markers
+    if [ $? -ne 0 ]; then
+      fail "Integration tests FAILED - Build terminating (fail-fast)"
+    fi
+    success "All integration tests passed."
+  elif [ "$UNIT_TESTS_ONLY" = true ]; then
+    info "Running UNIT TESTS ONLY …"
+    docker compose run --rm api python -m pytest tests/ \
+      --ignore=tests/test_worker_pool_integration.py \
+      --ignore=tests/test_influx_integration.py \
+      --ignore=tests/test_e2e_pipeline.py \
+      -v
+    success "All unit tests passed."
+  else
+    info "Running ALL TESTS (unit + integration) …"
+    docker compose run --rm api python -m pytest tests/ -v
+    if [ $? -ne 0 ]; then
+      fail "Tests FAILED - Build terminating"
+    fi
+    success "All tests passed."
+  fi
 fi
 
 # ── Step 5: Start containers ─────────────────────────────────────────────────
