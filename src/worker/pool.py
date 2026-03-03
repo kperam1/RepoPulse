@@ -26,6 +26,7 @@ class JobRecord:
         self.repo_url = repo_url
         self.local_path = local_path
         self.status = "queued"
+        self.progress = 0
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.started_at: Optional[str] = None
         self.completed_at: Optional[str] = None
@@ -37,6 +38,7 @@ class JobRecord:
         return {
             "job_id": self.job_id,
             "status": self.status,
+            "progress": self.progress,
             "repo_url": self.repo_url,
             "local_path": self.local_path,
             "created_at": self.created_at,
@@ -122,6 +124,7 @@ class WorkerPool:
     def _run_job(self, record: JobRecord):
         """Execute the analysis for one job (runs inside a worker thread)."""
         record.status = "processing"
+        record.progress = 10
         record.started_at = datetime.now(timezone.utc).isoformat()
         logger.info(f"[{record.job_id}] processing started")
 
@@ -129,14 +132,19 @@ class WorkerPool:
         try:
             # figure out what to analyze
             if record.repo_url:
+                record.progress = 25
                 repo_path = cloner.clone(record.repo_url, shallow=True)
             elif record.local_path:
                 repo_path = record.local_path
             else:
                 raise ValueError("No repo_url or local_path provided")
 
+            record.progress = 50
+
             # compute LOC
             project_loc = count_loc_in_directory(repo_path)
+
+            record.progress = 75
 
             # write to influxdb (best-effort)
             try:
@@ -221,10 +229,12 @@ class WorkerPool:
                 record.result["churn"] = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
 
             record.status = "completed"
+            record.progress = 100
             logger.info(f"[{record.job_id}] completed — {project_loc.total_loc} LOC")
 
         except (GitCloneError, Exception) as exc:
             record.status = "failed"
+            record.progress = 0
             record.error = str(exc)
             logger.error(f"[{record.job_id}] failed: {exc}")
         finally:

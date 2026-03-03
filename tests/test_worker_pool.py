@@ -253,6 +253,132 @@ class TestWorkerAPI:
         assert "network error" in detail["error"]
 
 
+# === US-31: GET /jobs/{job_id} status state tests =============================
+
+class TestJobStatusEndpoint:
+    """Dedicated tests for GET /jobs/{job_id} covering every status + progress."""
+
+    def test_status_queued_with_progress(self):
+        """A newly submitted job should be queued with progress 0."""
+        gate = threading.Event()
+
+        # block the worker so the job stays queued/processing
+        original_run = app.state.worker_pool._run_job
+
+        def blocked_run(record):
+            gate.wait(timeout=5)
+            original_run(record)
+
+        with patch.object(app.state.worker_pool, "_run_job", side_effect=blocked_run):
+            resp = client.post("/jobs", json={"local_path": "/tmp/fake"})
+            assert resp.status_code == 201
+            job_id = resp.json()["job_id"]
+
+            detail = client.get(f"/jobs/{job_id}").json()
+            # should be queued or processing (depends on timing)
+            assert detail["status"] in ("queued", "processing")
+            assert "progress" in detail
+            assert detail["result"] is None
+            assert detail["error"] is None
+
+            gate.set()  # let it finish (it will fail since /tmp/fake doesn't exist, that's fine)
+
+    @patch("src.worker.pool.GitRepoCloner")
+    def test_status_processing_with_progress(self, mock_cloner_cls):
+        """While a job is running, status should be 'processing' with progress > 0."""
+        started = threading.Event()
+        gate = threading.Event()
+
+        def slow_clone(url, shallow=True):
+            started.set()
+            gate.wait(timeout=5)
+            tmp = tempfile.mkdtemp(prefix="test_processing_")
+            _make_sample_tree(tmp)
+            return tmp
+
+        mock_cloner = MagicMock()
+        mock_cloner.clone.side_effect = slow_clone
+        mock_cloner_cls.return_value = mock_cloner
+
+        resp = client.post("/jobs", json={"repo_url": "https://github.com/owner/repo"})
+        job_id = resp.json()["job_id"]
+
+        # wait for the worker to actually start cloning
+        started.wait(timeout=5)
+
+        detail = client.get(f"/jobs/{job_id}").json()
+        assert detail["status"] == "processing"
+        assert detail["progress"] >= 10
+        assert detail["started_at"] is not None
+        assert detail["result"] is None
+
+        gate.set()  # let it finish
+        # wait for completion
+        for _ in range(50):
+            d = client.get(f"/jobs/{job_id}").json()
+            if d["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+
+    @patch("src.worker.pool.GitRepoCloner")
+    def test_status_completed_with_results_and_progress(self, mock_cloner_cls):
+        """A completed job should have status=completed, progress=100, and a result dict."""
+        tmp = tempfile.mkdtemp(prefix="test_completed_")
+        _make_sample_tree(tmp)
+
+        mock_cloner = MagicMock()
+        mock_cloner.clone.return_value = tmp
+        mock_cloner_cls.return_value = mock_cloner
+
+        resp = client.post("/jobs", json={"repo_url": "https://github.com/owner/repo"})
+        job_id = resp.json()["job_id"]
+
+        for _ in range(50):
+            detail = client.get(f"/jobs/{job_id}").json()
+            if detail["status"] == "completed":
+                break
+            time.sleep(0.1)
+
+        assert detail["status"] == "completed"
+        assert detail["progress"] == 100
+        assert detail["started_at"] is not None
+        assert detail["completed_at"] is not None
+        assert detail["result"] is not None
+        assert detail["result"]["total_loc"] > 0
+        assert detail["error"] is None
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    @patch("src.worker.pool.GitRepoCloner")
+    def test_status_failed_with_error_and_progress(self, mock_cloner_cls):
+        """A failed job should have status=failed, progress=0, and an error message."""
+        from src.core.git_clone import GitCloneError
+        mock_cloner = MagicMock()
+        mock_cloner.clone.side_effect = GitCloneError("auth failed")
+        mock_cloner_cls.return_value = mock_cloner
+
+        resp = client.post("/jobs", json={"repo_url": "https://github.com/bad/repo"})
+        job_id = resp.json()["job_id"]
+
+        for _ in range(50):
+            detail = client.get(f"/jobs/{job_id}").json()
+            if detail["status"] == "failed":
+                break
+            time.sleep(0.1)
+
+        assert detail["status"] == "failed"
+        assert detail["progress"] == 0
+        assert detail["error"] is not None
+        assert "auth failed" in detail["error"]
+        assert detail["result"] is None
+        assert detail["completed_at"] is not None
+
+    def test_status_not_found(self):
+        """GET /jobs/{id} for a non-existent job should return 404."""
+        resp = client.get("/jobs/00000000-0000-0000-0000-000000000000")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Job not found"
+
+
 # === Load test: 5+ simultaneous jobs ==========================================
 
 class TestLoadParallel:
