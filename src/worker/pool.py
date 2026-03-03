@@ -137,16 +137,19 @@ class WorkerPool:
             # compute LOC
             project_loc = count_loc_in_directory(repo_path)
 
-            # write to influxdb (best-effort)
+            # write to influxdb using batch pipeline with retry
             try:
-                from src.core.influx import write_loc_metric
+                from src.core.influx import batch_write_loc_metrics
 
                 repo_name = (record.repo_url or record.local_path or "unknown")
                 repo_name = repo_name.rstrip("/").rstrip(".git").split("/")[-1]
                 collected_at = datetime.now(timezone.utc).isoformat()
 
+                # collect all metric dicts into one list
+                all_metrics: list[dict] = []
+
                 # project-level metric
-                write_loc_metric({
+                all_metrics.append({
                     "repo_id": record.repo_url or record.local_path,
                     "repo_name": repo_name,
                     "branch": "HEAD",
@@ -164,7 +167,7 @@ class WorkerPool:
                 for f in project_loc.files:
                     ext = os.path.splitext(f.path)[1].lower()
                     lang_map = {".py": "python", ".java": "java", ".ts": "typescript"}
-                    write_loc_metric({
+                    all_metrics.append({
                         "repo_id": record.repo_url or record.local_path,
                         "repo_name": repo_name,
                         "branch": "HEAD",
@@ -181,7 +184,7 @@ class WorkerPool:
 
                 # per-package metrics
                 for pkg in project_loc.packages:
-                    write_loc_metric({
+                    all_metrics.append({
                         "repo_id": record.repo_url or record.local_path,
                         "repo_name": repo_name,
                         "branch": "HEAD",
@@ -196,7 +199,18 @@ class WorkerPool:
                         "collected_at": collected_at,
                     })
 
-                logger.info(f"[{record.job_id}] wrote {len(project_loc.files) + len(project_loc.packages) + 1} metric points to InfluxDB")
+                # batch write with retry + confirmation
+                write_result = batch_write_loc_metrics(all_metrics)
+                if write_result.success:
+                    logger.info(
+                        f"[{record.job_id}] wrote {write_result.points_written} metric points to InfluxDB"
+                    )
+                else:
+                    logger.warning(
+                        f"[{record.job_id}] InfluxDB batch write partially failed: "
+                        f"{write_result.points_written} written, {write_result.points_failed} failed "
+                        f"after {write_result.retries_used} retries"
+                    )
             except Exception as influx_err:
                 logger.warning(f"[{record.job_id}] InfluxDB write failed: {influx_err}")
 
