@@ -3,8 +3,6 @@
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
-import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -14,7 +12,6 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from src.core.config import Config
 
 logger = logging.getLogger("repopulse.influx")
-logger = logging.getLogger("repopulse.core.influx")
 
 _client: Optional[InfluxDBClient] = None
 
@@ -71,11 +68,6 @@ def _parse_timestamp(ts_str: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def write_loc_metric(loc_metric: dict) -> None:
-    """Write LOC metric to InfluxDB."""
-    client = get_client()
-    write_api = client.write_api(write_options=SYNCHRONOUS)
-
 def _build_loc_point(loc_metric: dict) -> Point:
     """Convert a LOC metric dict to an InfluxDB Point."""
     p = Point("loc_metrics")
@@ -104,17 +96,6 @@ def _build_loc_point(loc_metric: dict) -> Point:
             pass
     return p
 
-    collected_at = loc_metric.get("collected_at")
-    if collected_at:
-        ts = _parse_timestamp(collected_at)
-        if ts:
-            p = p.time(ts, WritePrecision.NS)
-    else:
-        p = p.time(datetime.now(timezone.utc), WritePrecision.NS)
-
-    write_api.write(bucket=Config.INFLUX_BUCKET, org=Config.INFLUX_ORG, record=p)
-    logger.debug(f"Wrote LOC metric to InfluxDB: {loc_metric.get('repo_name')} @ {loc_metric.get('collected_at', 'now')}")
-
 
 def write_timeseries_snapshot(snapshot: dict) -> None:
     """Write time-series metric snapshot linked to commit."""
@@ -135,7 +116,7 @@ def write_timeseries_snapshot(snapshot: dict) -> None:
         if v is not None:
             p = p.tag(tag, str(v))
 
-    metrics = snapshot.get("metrics", {})
+    metrics = snapshot.get("metrics") or snapshot
     try:
         p = p.field("total_loc", int(metrics.get("total_loc", 0)))
         p = p.field("code_loc", int(metrics.get("code_loc", 0)))

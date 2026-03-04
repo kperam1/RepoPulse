@@ -485,12 +485,7 @@ async def analyze_repo(request: Request):
             
             logger.info(f"Wrote {len(project_loc.files) + len(project_loc.packages) + 1} metric points to InfluxDB")
         except Exception as influx_err:
-            logger.warning(f"Failed to write churn to InfluxDB: {influx_err}")
-
-        try:
-            write_daily_churn_metrics(repo_url, daily)
-        except Exception as influx_err:
-            logger.warning(f"Failed to write daily churn to InfluxDB: {influx_err}")
+            logger.warning(f"Failed to write metrics to InfluxDB: {influx_err}")
 
         # 5. Build LOC response
         loc_response = ProjectLOCResponse(
@@ -557,15 +552,8 @@ async def analyze_repo(request: Request):
             ],
         )
 
-        # 6. Return combined response
-        return AnalyzeResponse(
-            repo_url=repo_url,
-            start_date=start_date,
-            end_date=end_date,
-            loc=loc_response,
-            churn=ChurnResponse(**churn_summary),
-            churn_daily={day: ChurnResponse(**vals) for day, vals in daily.items()},
-        )
+        # 6. Return LOC response
+        return loc_response
 
     except GitCloneError as e:
         logger.error(f"Clone failed for {repo_url}: {e}")
