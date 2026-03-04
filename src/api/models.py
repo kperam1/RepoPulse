@@ -52,9 +52,6 @@ class JobRequest(BaseModel):
                 raise ValueError("local_path must be an absolute path")
             # Reject any '..' component in the raw path (before normalisation)
             if ".." in v:
-            # Disallow any '..' path parts in the raw input
-            if ".." in v.split("/") or ".." in v.split(os.path.sep):
-            if ".." in v.split(os.path.sep):
                 raise ValueError("local_path must not contain '..'")
         return v
 
