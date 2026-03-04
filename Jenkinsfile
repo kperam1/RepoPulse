@@ -77,32 +77,32 @@ pipeline {
                     docker compose up -d
 
                     echo "Waiting for API to become healthy …"
-                    MAX_RETRIES=60
+                    MAX_RETRIES=30
                     RETRY=0
-                    until curl -sf http://localhost:8080/health > /dev/null 2>&1; do
+                    until docker compose exec -T api curl -sf http://localhost:8080/health > /dev/null 2>&1; do
                         RETRY=$((RETRY + 1))
                         if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
-                            echo "API did not start within $MAX_RETRIES seconds"
+                            echo "API did not start within $MAX_RETRIES attempts"
                             docker compose logs api
                             exit 1
                         fi
                         echo "  retry $RETRY/$MAX_RETRIES …"
-                        sleep 2
+                        sleep 3
                     done
                     echo "API is healthy ✓"
 
                     echo "Running service-level tests …"
 
                     # Test 1: Health endpoint returns 200
-                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+                    HTTP_CODE=$(docker compose exec -T api curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
                     if [ "$HTTP_CODE" != "200" ]; then
                         echo "FAIL: /health returned $HTTP_CODE"
                         exit 1
                     fi
                     echo "  ✓ GET /health → 200"
 
-                    # Test 2: API root/docs returns 200
-                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/docs)
+                    # Test 2: API docs returns 200
+                    HTTP_CODE=$(docker compose exec -T api curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/docs)
                     if [ "$HTTP_CODE" != "200" ]; then
                         echo "FAIL: /docs returned $HTTP_CODE"
                         exit 1
@@ -110,21 +110,23 @@ pipeline {
                     echo "  ✓ GET /docs → 200"
 
                     # Test 3: POST /analyze with a small repo
-                    HTTP_CODE=$(curl -s -o /tmp/analyze_response.json -w "%{http_code}" \
+                    RESPONSE=$(docker compose exec -T api curl -s -w "\n%{http_code}" \
                         -X POST http://localhost:8080/analyze \
                         -H "Content-Type: application/json" \
                         -d '{"repo_url": "https://github.com/pallets/markupsafe"}')
+                    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+                    BODY=$(echo "$RESPONSE" | sed '$d')
                     if [ "$HTTP_CODE" != "200" ]; then
                         echo "FAIL: POST /analyze returned $HTTP_CODE"
-                        cat /tmp/analyze_response.json
+                        echo "$BODY"
                         exit 1
                     fi
                     echo "  ✓ POST /analyze → 200"
 
                     # Test 4: Verify the response contains expected fields
-                    if ! grep -q '"total_loc"' /tmp/analyze_response.json; then
+                    if ! echo "$BODY" | grep -q '"total_loc"'; then
                         echo "FAIL: /analyze response missing total_loc field"
-                        cat /tmp/analyze_response.json
+                        echo "$BODY"
                         exit 1
                     fi
                     echo "  ✓ /analyze response contains total_loc"
