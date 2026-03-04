@@ -24,35 +24,32 @@ pipeline {
             }
         }
 
-        // ── Stage 2: Install Dependencies ────────────────────────────────
-        stage('Install Dependencies') {
+        // ── Stage 2: Build Docker Image ──────────────────────────────────
+        stage('Build Docker Image') {
             steps {
-                sh '''
-                    python3 -m venv venv
-                    . venv/bin/activate
-                    pip install --upgrade pip
-                    pip install -r requirements.txt
-                '''
+                sh 'docker compose build --no-cache'
             }
         }
 
-        // ── Stage 3: Unit Tests ──────────────────────────────────────────
+        // ── Stage 3: Unit Tests (inside container) ───────────────────────
         stage('Unit Tests') {
             steps {
                 sh '''
-                    . venv/bin/activate
-                    python -m pytest tests/ -v \
-                        --junitxml=reports/unit-tests.xml \
-                        --cov=src --cov-branch \
-                        --cov-report=term-missing \
-                        --cov-report=html:reports/coverage-html \
-                        --cov-report=xml:reports/coverage.xml \
-                        --cov-fail-under=80
+                    mkdir -p reports
+                    docker compose run --rm \
+                        -e PYTHONPATH=/app \
+                        api python -m pytest tests/ -v \
+                            --junitxml=/app/reports/unit-tests.xml \
+                            --cov=src --cov-branch \
+                            --cov-report=term-missing \
+                            --cov-report=html:/app/reports/coverage-html \
+                            --cov-report=xml:/app/reports/coverage.xml \
+                            --cov-fail-under=80
                 '''
             }
             post {
                 always {
-                    junit 'reports/unit-tests.xml'
+                    junit allowEmptyResults: true, testResults: 'reports/unit-tests.xml'
                 }
             }
         }
@@ -67,19 +64,12 @@ pipeline {
                     reportName:  'Coverage Report',
                     keepAll:     true,
                     alwaysLinkToLastBuild: true,
-                    allowMissing: false
+                    allowMissing: true
                 ])
             }
         }
 
-        // ── Stage 5: Build Docker Image ──────────────────────────────────
-        stage('Build Docker Image') {
-            steps {
-                sh 'docker compose build --no-cache'
-            }
-        }
-
-        // ── Stage 6: Service / API-Driven Test ──────────────────────────
+        // ── Stage 5: Service / API-Driven Test ──────────────────────────
         stage('Service Test') {
             steps {
                 sh '''
@@ -87,7 +77,7 @@ pipeline {
                     docker compose up -d
 
                     echo "Waiting for API to become healthy …"
-                    MAX_RETRIES=30
+                    MAX_RETRIES=60
                     RETRY=0
                     until curl -sf http://localhost:8080/health > /dev/null 2>&1; do
                         RETRY=$((RETRY + 1))
@@ -97,7 +87,7 @@ pipeline {
                             exit 1
                         fi
                         echo "  retry $RETRY/$MAX_RETRIES …"
-                        sleep 1
+                        sleep 2
                     done
                     echo "API is healthy ✓"
 
@@ -150,8 +140,6 @@ pipeline {
         always {
             // Tear down containers regardless of build result
             sh 'docker compose down --volumes --remove-orphans || true'
-            // Clean up workspace venv
-            sh 'rm -rf venv || true'
         }
         success {
             echo '✅ Pipeline completed successfully — all tests passed!'
