@@ -9,7 +9,8 @@ client = TestClient(app)
 # Block InfluxDB writes so test jobs don't pollute the real database.
 @pytest.fixture(autouse=True)
 def _no_influx_writes():
-    with patch("src.core.influx.write_loc_metric"):
+    with patch("src.core.influx.write_loc_metric"), \
+         patch("src.core.influx.batch_write_loc_metrics"):
         yield
 
 

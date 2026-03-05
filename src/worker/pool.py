@@ -10,6 +10,7 @@ from typing import Optional
 
 from src.core.git_clone import GitRepoCloner, GitCloneError
 from src.metrics.loc import count_loc_in_directory
+from src.metrics.churn import compute_repo_churn, compute_daily_churn
 
 logger = logging.getLogger("repopulse.pool")
 
@@ -25,6 +26,7 @@ class JobRecord:
         self.repo_url = repo_url
         self.local_path = local_path
         self.status = "queued"
+        self.progress = 0
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.started_at: Optional[str] = None
         self.completed_at: Optional[str] = None
@@ -36,6 +38,7 @@ class JobRecord:
         return {
             "job_id": self.job_id,
             "status": self.status,
+            "progress": self.progress,
             "repo_url": self.repo_url,
             "local_path": self.local_path,
             "created_at": self.created_at,
@@ -121,6 +124,7 @@ class WorkerPool:
     def _run_job(self, record: JobRecord):
         """Execute the analysis for one job (runs inside a worker thread)."""
         record.status = "processing"
+        record.progress = 10
         record.started_at = datetime.now(timezone.utc).isoformat()
         logger.info(f"[{record.job_id}] processing started")
 
@@ -128,25 +132,34 @@ class WorkerPool:
         try:
             # figure out what to analyze
             if record.repo_url:
+                record.progress = 25
                 repo_path = cloner.clone(record.repo_url, shallow=True)
             elif record.local_path:
                 repo_path = record.local_path
             else:
                 raise ValueError("No repo_url or local_path provided")
 
+            record.progress = 50
+
             # compute LOC
             project_loc = count_loc_in_directory(repo_path)
 
+            # write to influxdb using batch pipeline with retry
+            record.progress = 75
+
             # write to influxdb (best-effort)
             try:
-                from src.core.influx import write_loc_metric
+                from src.core.influx import batch_write_loc_metrics
 
                 repo_name = (record.repo_url or record.local_path or "unknown")
                 repo_name = repo_name.rstrip("/").rstrip(".git").split("/")[-1]
                 collected_at = datetime.now(timezone.utc).isoformat()
 
+                # collect all metric dicts into one list
+                all_metrics: list[dict] = []
+
                 # project-level metric
-                write_loc_metric({
+                all_metrics.append({
                     "repo_id": record.repo_url or record.local_path,
                     "repo_name": repo_name,
                     "branch": "HEAD",
@@ -164,7 +177,7 @@ class WorkerPool:
                 for f in project_loc.files:
                     ext = os.path.splitext(f.path)[1].lower()
                     lang_map = {".py": "python", ".java": "java", ".ts": "typescript"}
-                    write_loc_metric({
+                    all_metrics.append({
                         "repo_id": record.repo_url or record.local_path,
                         "repo_name": repo_name,
                         "branch": "HEAD",
@@ -181,7 +194,7 @@ class WorkerPool:
 
                 # per-package metrics
                 for pkg in project_loc.packages:
-                    write_loc_metric({
+                    all_metrics.append({
                         "repo_id": record.repo_url or record.local_path,
                         "repo_name": repo_name,
                         "branch": "HEAD",
@@ -196,7 +209,18 @@ class WorkerPool:
                         "collected_at": collected_at,
                     })
 
-                logger.info(f"[{record.job_id}] wrote {len(project_loc.files) + len(project_loc.packages) + 1} metric points to InfluxDB")
+                # batch write with retry + confirmation
+                write_result = batch_write_loc_metrics(all_metrics)
+                if write_result.success:
+                    logger.info(
+                        f"[{record.job_id}] wrote {write_result.points_written} metric points to InfluxDB"
+                    )
+                else:
+                    logger.warning(
+                        f"[{record.job_id}] InfluxDB batch write partially failed: "
+                        f"{write_result.points_written} written, {write_result.points_failed} failed "
+                        f"after {write_result.retries_used} retries"
+                    )
             except Exception as influx_err:
                 logger.warning(f"[{record.job_id}] InfluxDB write failed: {influx_err}")
 
@@ -208,12 +232,38 @@ class WorkerPool:
                 "total_blank_lines": project_loc.total_blank_lines,
                 "total_excluded_lines": project_loc.total_excluded_lines,
                 "total_comment_lines": project_loc.total_comment_lines,
+                "total_weighted_loc": project_loc.total_weighted_loc,
             }
+
+            # compute churn (best-effort; requires a .git directory)
+            try:
+                churn = compute_repo_churn(repo_path, "1970-01-01", "2100-01-01")
+                record.result["churn"] = churn
+
+                # write churn metrics to InfluxDB
+                try:
+                    from src.core.influx import write_churn_metric, write_daily_churn_metrics
+
+                    repo_url = record.repo_url or record.local_path or "unknown"
+                    write_churn_metric(repo_url, "1970-01-01", "2100-01-01", churn)
+
+                    daily_churn = compute_daily_churn(repo_path, "1970-01-01", "2100-01-01")
+                    if daily_churn:
+                        write_daily_churn_metrics(repo_url, daily_churn)
+                    logger.info(f"[{record.job_id}] wrote churn metrics to InfluxDB")
+                except Exception as influx_churn_err:
+                    logger.warning(f"[{record.job_id}] churn InfluxDB write failed: {influx_churn_err}")
+            except Exception as churn_err:
+                logger.warning(f"[{record.job_id}] churn computation failed: {churn_err}")
+                record.result["churn"] = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
+
             record.status = "completed"
+            record.progress = 100
             logger.info(f"[{record.job_id}] completed — {project_loc.total_loc} LOC")
 
         except (GitCloneError, Exception) as exc:
             record.status = "failed"
+            record.progress = 0
             record.error = str(exc)
             logger.error(f"[{record.job_id}] failed: {exc}")
         finally:

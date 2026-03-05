@@ -58,9 +58,19 @@ Once running, the API is at **http://localhost:8080**. Interactive docs at [http
 | GET    | `/health/db`     | InfluxDB connection check                        |
 | POST   | `/jobs`          | Submit a repo analysis job (queued to worker pool)|
 | GET    | `/jobs/{job_id}` | Get job status and results                       |
+| GET    | `/jobs/{job_id}/results` | Get structured metric results (LOC + Churn) |
 | GET    | `/workers/health`| Worker pool health (pool size, queue depth, etc.)|
 | POST   | `/metrics/loc`   | Compute LOC for a local repo path                |
 | POST   | `/analyze`       | Clone a GitHub repo, compute LOC, store in InfluxDB |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/latest` | Latest snapshot |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/range` | Snapshots in date range |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/at/{timestamp}` | Point-in-time snapshot |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/commit/{commit_hash}` | Snapshots for commit |
+| GET    | `/metrics/timeseries/commits/{repo_id}` | Commits in date range |
+| GET    | `/metrics/timeseries/commits/{repo_id}/compare` | Compare two commits |
+| GET    | `/metrics/timeseries/trend/{repo_id}` | LOC trend over time |
+| GET    | `/metrics/timeseries/by-branch/{repo_id}` | Latest LOC per branch |
+| GET    | `/metrics/timeseries/change/{repo_id}` | LOC change between timestamps |
 
 ### Testing the `/jobs` endpoint
 
@@ -96,20 +106,97 @@ curl -s http://localhost:8080/jobs/<job_id> | python3 -m json.tool
 
 After a job completes, the metrics are stored in InfluxDB and show up on the Grafana dashboard automatically.
 
+### Retrieve structured metric results
+
+Once a job completes, use `GET /jobs/{job_id}/results` to get a structured JSON response with LOC and Code Churn metrics plus metadata. Results are cached in memory for quick retrieval — repeated calls return instantly.
+
+```sh
+curl -s http://localhost:8080/jobs/<job_id>/results | python3 -m json.tool
+```
+
+**Example response:**
+
+```json
+{
+  "job_id": "abc-123",
+  "status": "completed",
+  "metadata": {
+    "repository": "https://github.com/owner/repo",
+    "analysed_at": "2026-02-27T12:00:00+00:00",
+    "scope": "project"
+  },
+  "loc": {
+    "total_loc": 1250,
+    "total_files": 15,
+    "total_blank_lines": 180,
+    "total_excluded_lines": 42,
+    "total_comment_lines": 95,
+    "total_weighted_loc": 1297.5
+  },
+  "churn": {
+    "added": 142,
+    "deleted": 38,
+    "modified": 38,
+    "total": 180
+  }
+}
+```
+
+| Scenario | Behaviour |
+|---|---|
+| Job completed | Returns full LOC + churn + metadata |
+| Job still running | Returns `{ "status": "processing", "message": "..." }` |
+| Job ID not found | `404 Not Found` with `{ "detail": "Job not found" }` |
+
+## Time-Series Metrics
+
+Time-series LOC metrics linked to Git commits. See the endpoint table above for all 9 available queries. Data captured: repo, commit hash, branch, timestamp, LOC breakdown, granularity.
+
+### Testing
+
+All 123 unit tests run during `./build.sh` and pass in ~2 seconds (mocked, no InfluxDB needed).
+
+For integration testing, query the running API:
+```sh
+curl -s "http://localhost:8080/metrics/timeseries/snapshots/test-repo/latest?granularity=project" | python3 -m json.tool
+```
+
 ## Grafana Dashboard
 
-Grafana is auto-provisioned with the InfluxDB datasource and a LOC metrics dashboard.
+Grafana is auto-provisioned with the InfluxDB datasource and the **RepoPulse - Overview** dashboard.
 
 - **URL:** http://localhost:3000
 - **Username:** `admin`
-- **Password:** `admin` 
+- **Password:** `admin`
 
-The dashboard shows:
-- Total LOC (stat panel)
-- Comment and blank line counts
-- LOC by file — top 10 (bar chart)
-- LOC by package (bar chart)
-- LOC over time (time series)
+### RepoPulse - Overview
+
+Unified dashboard correlating LOC and Code Churn across repositories.
+
+**📊 Repository Summary Statistics**
+- Total LOC, Comment Lines, Blank Lines, Total Code Churn (stat panels)
+
+**📈 LOC Trend**
+- LOC Over Time — total lines of code per repository (time series)
+- LOC Breakdown — code, comment, and blank lines stacked (time series)
+
+**🔄 Code Churn Trend**
+- Daily Code Churn (Added / Deleted / Modified) — stacked bar chart
+- Total Churn Over Time — line chart of daily total churn per repository
+- Cumulative Churn (Added / Deleted / Modified) — running total over time
+
+**🔥 Churn by File & Package**
+- Churn by File (Top 10 Most Volatile) — files with the largest absolute LOC change
+- Churn by Package — packages ranked by LOC change magnitude
+
+**📁 File & Package Breakdown**
+- LOC by File — top 10 files by total lines of code (bar chart)
+- LOC by Package — lines of code per package (bar chart)
+
+**🕐 Last Updated**
+- Last LOC Update and Last Churn Update timestamps
+
+The dashboard provides a **Repository** dropdown (multi-select) and responds to the Grafana **date range selector**.
 
 Key variables:
 
@@ -191,6 +278,31 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 Or just run `./build.sh` (or `.\build.bat` on Windows) — the build script runs tests inside Docker automatically.
 
+## Weighted LOC — Rationale & Formula
+
+RepoPulse provides both **raw LOC** and **weighted LOC** in every response (file, package, and project level).
+
+### Formula
+
+```
+weighted_loc = (code_lines × 1.0) + (comment_lines × 0.5)
+```
+
+| Line type | Weight | Rationale |
+|-----------|--------|-----------|
+| **Code** | 1.0 | Executable logic — full complexity weight |
+| **Comment** (pure) | 0.5 | Documentation effort is valuable but carries less executable complexity |
+| **Mixed** (code + inline comment) | 1.0 | Treated as code — the line contains executable logic |
+| **Blank / excluded** | 0.0 | No developer effort — not counted |
+
+### Why 0.5 for comments?
+
+- Comments represent meaningful developer effort  but do not execute or add cyclomatic complexity.
+- A 0.5 multiplier balances between ignoring comments entirely and counting them equally.
+- This aligns with industry practices where weighted LOC provides a more accurate picture of a codebase's real "weight" for estimation and comparison.
+
+Both `loc` (raw) and `weighted_loc` are returned in every API response at file, package, and project granularity.
+
 ## Services
 
 
@@ -199,3 +311,85 @@ Or just run `./build.sh` (or `.\build.bat` on Windows) — the build script runs
 | `repopulse-dev`     | local build              | `http://localhost:8080`  | FastAPI backend         |
 | `repopulse-influx`  | `influxdb:2.8`           | `http://localhost:8086`  | Time-series DB          |
 | `repopulse-grafana` | `grafana/grafana:11.5.1` | `http://localhost:3000`  | Dashboard visualization |
+
+## Code Churn Metric
+
+Code churn measures the volume of change in a codebase over time. RepoPulse computes four values per commit:
+
+| Metric     | Definition                              |
+|------------|-----------------------------------------|
+| `added`    | Total lines added across all files      |
+| `deleted`  | Total lines deleted across all files    |
+| `modified` | `min(added, deleted)` — lines changed in place |
+| `total`    | `added + deleted` — overall churn       |
+
+### How RepoPulse computes churn
+
+1. Clones the GitHub repository (full clone to preserve commit history)
+2. Extracts commit history within the requested date range using `git log`
+3. For each commit, runs `git show --numstat --first-parent` to get per-file add/delete counts
+4. Skips binary files (reported as `-` in numstat output)
+5. Aggregates results into:
+   - **churn** — totals across all commits in the range
+   - **churn_daily** — totals grouped by date (one entry per day)
+
+### `/analyze` response
+
+The `/analyze` endpoint now returns both LOC and churn data. The `start_date` and `end_date` fields are optional — if omitted, they default to the last 7 days ending today (UTC).
+
+**With date range (Linux / macOS):**
+
+```sh
+curl -X POST http://localhost:8080/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git",
+    "start_date": "2025-06-01",
+    "end_date": "2025-06-07"
+  }'
+```
+
+**Without dates (defaults to last 7 days):**
+
+```sh
+curl -X POST http://localhost:8080/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git"}'
+```
+
+**Example response (trimmed):**
+
+```json
+{
+  "repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git",
+  "start_date": "2025-06-01",
+  "end_date": "2025-06-07",
+  "loc": {
+    "project_root": "/tmp/...",
+    "total_loc": 1958,
+    "total_files": 3
+  },
+  "churn": {
+    "added": 142,
+    "deleted": 38,
+    "modified": 38,
+    "total": 180
+  },
+  "churn_daily": {
+    "2025-06-02": {
+      "added": 80,
+      "deleted": 20,
+      "modified": 20,
+      "total": 100
+    },
+    "2025-06-05": {
+      "added": 62,
+      "deleted": 18,
+      "modified": 18,
+      "total": 80
+    }
+  }
+}
+```
+
+Churn metrics are also written to InfluxDB (`repo_churn` and `repo_churn_daily` measurements).
