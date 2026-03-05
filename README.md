@@ -163,18 +163,40 @@ curl -s "http://localhost:8080/metrics/timeseries/snapshots/test-repo/latest?gra
 
 ## Grafana Dashboard
 
-Grafana is auto-provisioned with the InfluxDB datasource and a LOC metrics dashboard.
+Grafana is auto-provisioned with the InfluxDB datasource and the **RepoPulse - Overview** dashboard.
 
 - **URL:** http://localhost:3000
 - **Username:** `admin`
-- **Password:** `admin` 
+- **Password:** `admin`
 
-The dashboard shows:
-- Total LOC (stat panel)
-- Comment and blank line counts
-- LOC by file — top 10 (bar chart)
-- LOC by package (bar chart)
-- LOC over time (time series)
+### RepoPulse - Overview
+
+Unified dashboard correlating LOC and Code Churn across repositories.
+
+**📊 Repository Summary Statistics**
+- Total LOC, Comment Lines, Blank Lines, Total Code Churn (stat panels)
+
+**📈 LOC Trend**
+- LOC Over Time — total lines of code per repository (time series)
+- LOC Breakdown — code, comment, and blank lines stacked (time series)
+
+**🔄 Code Churn Trend**
+- Daily Code Churn (Added / Deleted / Modified) — stacked bar chart
+- Total Churn Over Time — line chart of daily total churn per repository
+- Cumulative Churn (Added / Deleted / Modified) — running total over time
+
+**🔥 Churn by File & Package**
+- Churn by File (Top 10 Most Volatile) — files with the largest absolute LOC change
+- Churn by Package — packages ranked by LOC change magnitude
+
+**📁 File & Package Breakdown**
+- LOC by File — top 10 files by total lines of code (bar chart)
+- LOC by Package — lines of code per package (bar chart)
+
+**🕐 Last Updated**
+- Last LOC Update and Last Churn Update timestamps
+
+The dashboard provides a **Repository** dropdown (multi-select) and responds to the Grafana **date range selector**.
 
 Key variables:
 
