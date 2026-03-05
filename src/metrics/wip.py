@@ -214,7 +214,7 @@ def _categorize_status(
 
     status_info = status_map.get(status_id, {})
     if status_info.get("is_closed", False):
-        return "backlog"
+        return "done"
 
     if min_order is None:
         min_order = min((s.get("order", 999) for s in status_map.values()), default=999)
