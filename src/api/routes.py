@@ -43,10 +43,13 @@ from src.api.models import (
     LocChangeResponse,
 )
 from src.metrics.loc import count_loc_in_directory
+from src.metrics.churn import compute_repo_churn, compute_daily_churn
 from src.core.influx import (
     get_client,
     write_loc_metric,
     write_timeseries_snapshot,
+    write_churn_metric,
+    write_daily_churn_metrics,
     query_timeseries_snapshots_by_repo,
     query_latest_snapshot,
     query_snapshot_at_timestamp,
@@ -490,6 +493,24 @@ async def analyze_repo(request: Request):
             logger.info(f"Wrote {len(project_loc.files) + len(project_loc.packages) + 1} metric points to InfluxDB")
         except Exception as influx_err:
             logger.warning(f"Failed to write metrics to InfluxDB: {influx_err}")
+
+        # 4. Compute churn & write to InfluxDB
+        churn = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
+        churn_daily = {}
+        try:
+            churn = compute_repo_churn(repo_path, start_date, end_date)
+            churn_daily = compute_daily_churn(repo_path, start_date, end_date)
+            logger.info(f"Churn computed: {churn['total']} total, {len(churn_daily)} days")
+
+            try:
+                write_churn_metric(repo_url, start_date, end_date, churn)
+                if churn_daily:
+                    write_daily_churn_metrics(repo_url, churn_daily)
+                logger.info("Wrote churn metrics to InfluxDB")
+            except Exception as influx_err:
+                logger.warning(f"Failed to write churn metrics to InfluxDB: {influx_err}")
+        except Exception as churn_err:
+            logger.warning(f"Churn computation failed: {churn_err}")
 
         # 5. Build LOC response
         loc_response = ProjectLOCResponse(

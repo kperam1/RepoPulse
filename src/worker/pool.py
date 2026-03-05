@@ -10,7 +10,7 @@ from typing import Optional
 
 from src.core.git_clone import GitRepoCloner, GitCloneError
 from src.metrics.loc import count_loc_in_directory
-from src.metrics.churn import compute_repo_churn
+from src.metrics.churn import compute_repo_churn, compute_daily_churn
 
 logger = logging.getLogger("repopulse.pool")
 
@@ -239,6 +239,20 @@ class WorkerPool:
             try:
                 churn = compute_repo_churn(repo_path, "1970-01-01", "2100-01-01")
                 record.result["churn"] = churn
+
+                # write churn metrics to InfluxDB
+                try:
+                    from src.core.influx import write_churn_metric, write_daily_churn_metrics
+
+                    repo_url = record.repo_url or record.local_path or "unknown"
+                    write_churn_metric(repo_url, "1970-01-01", "2100-01-01", churn)
+
+                    daily_churn = compute_daily_churn(repo_path, "1970-01-01", "2100-01-01")
+                    if daily_churn:
+                        write_daily_churn_metrics(repo_url, daily_churn)
+                    logger.info(f"[{record.job_id}] wrote churn metrics to InfluxDB")
+                except Exception as influx_churn_err:
+                    logger.warning(f"[{record.job_id}] churn InfluxDB write failed: {influx_churn_err}")
             except Exception as churn_err:
                 logger.warning(f"[{record.job_id}] churn computation failed: {churn_err}")
                 record.result["churn"] = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
