@@ -361,24 +361,48 @@ class AnalyzeRequest(BaseModel):
 
 class WIPRequest(BaseModel):
     """Request body for POST /metrics/wip — compute WIP from a Taiga board."""
-    taiga_url: str = Field(..., description="Public Taiga board URL (e.g., https://taiga.io/project/project-slug)")
+    taiga_url: Optional[str] = Field(
+        None,
+        description="Taiga scrum board URL (e.g., https://taiga.io/project/project-slug). "
+                    "Computes user-story WIP per sprint."
+    )
+    kanban_url: Optional[str] = Field(
+        None,
+        description="Taiga kanban board URL (e.g., https://taiga.io/project/project-slug). "
+                    "Computes task-level WIP over a date range. Takes priority if both are provided."
+    )
     recent_days: Optional[int] = Field(
         None,
-        description="(Optional) Restrict calculation to the last X days. "
-                    "If omitted, all sprint history is analysed."
+        description="For scrum: restrict to sprints ending within the last X days. "
+                    "For kanban: date range window (defaults to 30 days)."
     )
 
     @field_validator("taiga_url")
     @classmethod
     def validate_taiga_url(cls, v):
-        v = v.strip()
-        if not v:
-            raise ValueError("taiga_url cannot be empty")
-        if "/project/" not in v:
-            raise ValueError(
-                "taiga_url must be a valid Taiga board URL in the format "
-                "https://taiga.io/project/project-slug"
-            )
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("taiga_url cannot be empty")
+            if "/project/" not in v:
+                raise ValueError(
+                    "taiga_url must be a valid Taiga board URL in the format "
+                    "https://taiga.io/project/project-slug"
+                )
+        return v
+
+    @field_validator("kanban_url")
+    @classmethod
+    def validate_kanban_url(cls, v):
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("kanban_url cannot be empty")
+            if "/project/" not in v:
+                raise ValueError(
+                    "kanban_url must be a valid Taiga board URL in the format "
+                    "https://taiga.io/project/project-slug"
+                )
         return v
 
     @field_validator("recent_days")
@@ -390,6 +414,10 @@ class WIPRequest(BaseModel):
             if v <= 0:
                 raise ValueError("recent_days must be positive")
         return v
+
+    def model_post_init(self, __context):
+        if not self.taiga_url and not self.kanban_url:
+            raise ValueError("Either 'taiga_url' or 'kanban_url' must be provided")
 
 
 class DailyWIPMetricResponse(BaseModel):
@@ -404,7 +432,7 @@ class SprintWIPResponse(BaseModel):
     """WIP metrics for a single sprint."""
     project_id: int = Field(..., description="Taiga project ID")
     project_slug: str = Field(..., description="Taiga project slug")
-    sprint_id: int = Field(..., description="Taiga sprint/milestone ID")
+    sprint_id: Optional[int] = Field(None, description="Taiga sprint/milestone ID (null for kanban)")
     sprint_name: str = Field(..., description="Name of the sprint")
     date_range_start: str = Field(..., description="Sprint start date (YYYY-MM-DD)")
     date_range_end: str = Field(..., description="Sprint end date (YYYY-MM-DD)")

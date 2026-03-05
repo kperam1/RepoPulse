@@ -47,7 +47,7 @@ from src.api.models import (
 )
 from src.metrics.loc import count_loc_in_directory
 from src.metrics.churn import compute_repo_churn, compute_daily_churn
-from src.metrics.wip import calculate_daily_wip_all_sprints, TaigaFetchError
+from src.metrics.wip import calculate_daily_wip_all_sprints, calculate_kanban_wip, TaigaFetchError
 from src.core.influx import (
     get_client,
     write_loc_metric,
@@ -626,16 +626,53 @@ async def compute_wip(request: Request):
             content={"detail": messages},
         )
 
+    kanban_url = wip_request.kanban_url
     taiga_url = wip_request.taiga_url
     recent = wip_request.recent_days
 
+    # If kanban_url is provided, use kanban mode (task-level WIP)
+    use_kanban = kanban_url is not None
+    board_url = kanban_url if use_kanban else taiga_url
+
     try:
-        # Calculate daily WIP metrics for all sprints
-        logger.info(f"Calculating daily WIP metrics for all sprints: {taiga_url} recent_days={recent}")
-        sprints_data = calculate_daily_wip_all_sprints(taiga_url, recent_days=recent)
-        
+        if use_kanban:
+            logger.info(f"Calculating kanban WIP metrics: {board_url} recent_days={recent}")
+            kanban_metric = calculate_kanban_wip(board_url, recent_days=recent)
+
+            sprint_resp = {
+                "project_id": kanban_metric.project_id,
+                "project_slug": kanban_metric.project_slug,
+                "sprint_id": None,
+                "sprint_name": "kanban",
+                "date_range_start": kanban_metric.date_range_start,
+                "date_range_end": kanban_metric.date_range_end,
+                "daily_wip": [
+                    {
+                        "date": daily.date,
+                        "wip_count": daily.wip_count,
+                        "backlog_count": daily.backlog_count,
+                        "done_count": daily.done_count,
+                    }
+                    for daily in kanban_metric.daily_wip
+                ],
+            }
+
+            response = WIPResponse(
+                project_id=kanban_metric.project_id,
+                project_slug=kanban_metric.project_slug,
+                sprints_count=1,
+                sprints=[sprint_resp],
+            )
+
+            logger.info(f"Kanban WIP metrics calculated: {len(kanban_metric.daily_wip)} days")
+            return response
+
+        # Scrum mode: user-story WIP per sprint
+        logger.info(f"Calculating daily WIP metrics for all sprints: {board_url} recent_days={recent}")
+        sprints_data = calculate_daily_wip_all_sprints(board_url, recent_days=recent)
+
         if not sprints_data:
-            logger.warning(f"No sprints found for {taiga_url}")
+            logger.warning(f"No sprints found for {board_url}")
             return JSONResponse(
                 status_code=404,
                 content={"detail": "No sprints found for the specified project"},

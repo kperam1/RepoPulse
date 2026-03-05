@@ -152,6 +152,86 @@ Returns LOC data plus code churn (how many lines were added/deleted):
 
 ---
 
+**POST `/metrics/wip`** — Get daily WIP (Work In Progress) numbers from a Taiga board
+
+This endpoint connects to a Taiga project and counts how many items are in backlog, being worked on, or done for each day. It supports both scrum boards (sprints with user stories) and kanban boards (tasks over a date range).
+
+Send one of these:
+- `taiga_url` (string) — Link to a Taiga scrum board. Looks at user stories per sprint.
+- `kanban_url` (string) — Link to a Taiga kanban board. Looks at tasks over a date range. If you send both, kanban is used.
+- `recent_days` (number, optional) — For scrum: only include sprints from the last X days. For kanban: how far back to look (default is 30 days).
+
+**Scrum board request:**
+```json
+{
+  "taiga_url": "https://tree.taiga.io/project/taiga",
+  "recent_days": 90
+}
+```
+
+**Kanban board request:**
+```json
+{
+  "kanban_url": "https://tree.taiga.io/project/my-kanban-project",
+  "recent_days": 30
+}
+```
+
+**Response:**
+```json
+{
+  "project_id": 396949,
+  "project_slug": "taiga",
+  "sprints_count": 1,
+  "sprints": [
+    {
+      "sprint_id": 123,
+      "sprint_name": "Sprint 1",
+      "date_range_start": "2024-01-01",
+      "date_range_end": "2024-01-14",
+      "daily_wip": [
+        {
+          "date": "2024-01-01",
+          "wip_count": 3,
+          "backlog_count": 7,
+          "done_count": 0
+        },
+        {
+          "date": "2024-01-02",
+          "wip_count": 5,
+          "backlog_count": 4,
+          "done_count": 1
+        }
+      ]
+    }
+  ]
+}
+```
+
+**How it works with scrum boards (`taiga_url`):**
+1. Gets the project slug from the URL
+2. Pulls statuses and sprints from the Taiga API
+3. If `recent_days` is set, it only picks sprints that ended within that time window. If none match, it picks the most recent sprint instead.
+4. For each sprint, it gets the user stories and their status change history
+5. Goes through each day and checks what status each story was in on that day
+6. Groups them into **backlog** (first status), **wip** (in progress statuses), or **done** (closed statuses)
+
+**How it works with kanban boards (`kanban_url`):**
+1. Gets the project slug from the URL
+2. Pulls task statuses and all tasks from Taiga
+3. Looks at the last 30 days by default (or whatever `recent_days` you set)
+4. For each day, checks the task history to figure out each task's status
+5. Groups them the same way: backlog, wip, or done
+6. If the board has been inactive, it automatically shifts the window to show the last 30 days before the most recent activity
+7. Response uses `sprint_name: "kanban"` and `sprint_id: null`
+
+**Errors:**
+- `400` — Bad URL or missing both `taiga_url` and `kanban_url`
+- `404` — No sprints found (scrum only)
+- `503` — Could not reach the Taiga API
+
+---
+
 ## Job Status
 
 Jobs go through these stages:
