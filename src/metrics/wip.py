@@ -373,11 +373,21 @@ def calculate_daily_wip_all_sprints(
         logger.error(f"Unexpected error: {e}")
         raise TaigaFetchError(f"Unexpected error: {e}")
 
+    results: List[WIPMetric] = []
+    for m in milestones:
+        mid = m.get("id")
+        if mid is None:
+            continue
+        try:
+            metric = calculate_daily_wip(taiga_url, mid)
+            metric.sprint_name = m.get("name")
+            results.append(metric)
+        except (ValueError, TaigaFetchError) as e:
+            logger.warning(f"Skipping milestone {mid}: {e}")
+            continue
 
-
-
-
-
+    logger.info(f"Calculated WIP for {len(results)} sprints")
+    return results
 
 
 

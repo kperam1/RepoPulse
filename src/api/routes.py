@@ -31,10 +31,6 @@ from src.api.models import (
     WorkerHealthResponse,
     WIPRequest,
     WIPResponse,
-)
-from src.metrics.loc import count_loc_in_directory
-from src.metrics.wip import calculate_daily_wip_all_sprints, TaigaFetchError
-from src.core.influx import get_client, write_loc_metric
     TimeSeriesMetricSnapshot,
     SnapshotHistoryResponse,
     LatestSnapshotResponse,
@@ -51,6 +47,7 @@ from src.core.influx import get_client, write_loc_metric
 )
 from src.metrics.loc import count_loc_in_directory
 from src.metrics.churn import compute_repo_churn, compute_daily_churn
+from src.metrics.wip import calculate_daily_wip_all_sprints, TaigaFetchError
 from src.core.influx import (
     get_client,
     write_loc_metric,
@@ -688,6 +685,9 @@ async def compute_wip(request: Request):
         return JSONResponse(status_code=503, content={"detail": str(e)})
     except Exception as e:
         logger.error(f"WIP metric calculation failed: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
 @router.get("/metrics/timeseries/snapshots/{repo_id}/latest", response_model=LatestSnapshotResponse)
 async def get_latest_snapshot(repo_id: str, granularity: str = Query("project")):
     """Get the most recent metric snapshot for a repository."""

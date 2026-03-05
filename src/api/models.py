@@ -417,6 +417,8 @@ class WIPResponse(BaseModel):
     project_slug: str = Field(..., description="Taiga project slug")
     sprints_count: int = Field(..., description="Total number of sprints")
     sprints: list[SprintWIPResponse] = Field(..., description="WIP metrics for each sprint")
+
+
 class ChurnResponse(BaseModel):
     """Churn metrics for a date range."""
     added: int
