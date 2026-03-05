@@ -183,3 +183,66 @@ class AnalyzeRequest(BaseModel):
             )
         return v
 
+
+# WIP Metrics Schema
+
+
+class WIPRequest(BaseModel):
+    """Request body for POST /metrics/wip — compute WIP from a Taiga board."""
+    taiga_url: str = Field(..., description="Public Taiga board URL (e.g., https://taiga.io/project/project-slug)")
+    recent_days: Optional[int] = Field(
+        None,
+        description="(Optional) Restrict calculation to the last X days. "
+                    "If omitted, all sprint history is analysed."
+    )
+
+    @field_validator("taiga_url")
+    @classmethod
+    def validate_taiga_url(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("taiga_url cannot be empty")
+        if "/project/" not in v:
+            raise ValueError(
+                "taiga_url must be a valid Taiga board URL in the format "
+                "https://taiga.io/project/project-slug"
+            )
+        return v
+
+    @field_validator("recent_days")
+    @classmethod
+    def validate_recent_days(cls, v):
+        if v is not None:
+            if not isinstance(v, int):
+                raise ValueError("recent_days must be an integer")
+            if v <= 0:
+                raise ValueError("recent_days must be positive")
+        return v
+
+
+class DailyWIPMetricResponse(BaseModel):
+    """Daily WIP metric for a single day."""
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    wip_count: int = Field(..., description="Number of stories in WIP status")
+    backlog_count: int = Field(..., description="Number of stories in backlog status")
+    done_count: int = Field(..., description="Number of stories in done status")
+
+
+class SprintWIPResponse(BaseModel):
+    """WIP metrics for a single sprint."""
+    project_id: int = Field(..., description="Taiga project ID")
+    project_slug: str = Field(..., description="Taiga project slug")
+    sprint_id: int = Field(..., description="Taiga sprint/milestone ID")
+    sprint_name: str = Field(..., description="Name of the sprint")
+    date_range_start: str = Field(..., description="Sprint start date (YYYY-MM-DD)")
+    date_range_end: str = Field(..., description="Sprint end date (YYYY-MM-DD)")
+    daily_wip: list[DailyWIPMetricResponse] = Field(..., description="Daily WIP data for each day in the sprint")
+
+
+class WIPResponse(BaseModel):
+    """Response for WIP metric calculation across all sprints."""
+    project_id: int = Field(..., description="Taiga project ID")
+    project_slug: str = Field(..., description="Taiga project slug")
+    sprints_count: int = Field(..., description="Total number of sprints")
+    sprints: list[SprintWIPResponse] = Field(..., description="WIP metrics for each sprint")
+
