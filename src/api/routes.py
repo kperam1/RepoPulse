@@ -328,7 +328,11 @@ async def compute_loc(request: Request):
 @router.post("/analyze", response_model=ProjectLOCResponse, status_code=200)
 async def analyze_repo(request: Request):
     """Clone a public GitHub repo, compute LOC and churn metrics, write to InfluxDB, and return results."""
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception as e:
+        logger.error(f"Failed to parse request body: {e}")
+        return JSONResponse(status_code=400, content={"detail": f"Invalid JSON body: {e}"})
     logger.info(f"Analyze request: {body}")
 
     try:

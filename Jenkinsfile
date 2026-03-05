@@ -91,6 +91,20 @@ pipeline {
                     done
                     echo "API is healthy"
 
+                    echo "Waiting for InfluxDB to be ready"
+                    RETRY=0
+                    until docker compose exec -T influxdb influx ping > /dev/null 2>&1; do
+                        RETRY=$((RETRY + 1))
+                        if [ "$RETRY" -ge 20 ]; then
+                            echo "InfluxDB did not become ready in time"
+                            docker compose logs influxdb
+                            exit 1
+                        fi
+                        echo "  influx retry $RETRY/20"
+                        sleep 2
+                    done
+                    echo "InfluxDB is ready"
+
                     echo "Running service-level tests"
 
                     HTTP_CODE=$(docker compose exec -T api curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
@@ -107,12 +121,16 @@ pipeline {
                     fi
                     echo "  PASS: GET /docs -> 200"
 
-                    RESPONSE=$(docker compose exec -T api curl -s -w "HTTP_STATUS:%{http_code}" -X POST http://localhost:8080/analyze -H "Content-Type: application/json" -d "{\"repo_url\": \"https://github.com/pallets/markupsafe\"}")
+                    echo "Testing POST /analyze (clone + LOC analysis) …"
+                    RESPONSE=$(docker compose exec -T api curl -s --max-time 120 -w "\nHTTP_STATUS:%{http_code}" -X POST http://localhost:8080/analyze -H "Content-Type: application/json" -d '{"repo_url":"https://github.com/pallets/markupsafe"}')
                     HTTP_CODE=$(echo "$RESPONSE" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
-                    BODY=$(echo "$RESPONSE" | sed "s/HTTP_STATUS:[0-9]*$//")
+                    BODY=$(echo "$RESPONSE" | sed "/HTTP_STATUS:[0-9]*$/d")
                     if [ "$HTTP_CODE" != "200" ]; then
                         echo "FAIL: POST /analyze returned $HTTP_CODE"
-                        echo "$BODY"
+                        echo "Response body: $BODY"
+                        echo ""
+                        echo "=== API container logs ==="
+                        docker compose logs --tail=60 api
                         exit 1
                     fi
                     echo "  PASS: POST /analyze -> 200"
