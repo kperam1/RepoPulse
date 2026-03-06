@@ -5,7 +5,6 @@ class Config:
     DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "t")
     HOST = os.getenv("HOST", "127.0.0.1")
     PORT = int(os.getenv("PORT", 8000))
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
     # InfluxDB
     INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086")
     INFLUX_TOKEN = os.getenv("INFLUX_TOKEN")

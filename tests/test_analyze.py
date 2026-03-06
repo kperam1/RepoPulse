@@ -35,11 +35,12 @@ def _create_test_repo(path: str) -> None:
 
 class TestAnalyzeEndpoint:
 
+    @patch("src.api.routes.write_daily_churn_metrics")
     @patch("src.api.routes.write_churn_metric")
     @patch("src.api.routes.write_loc_metric")
     @patch("src.api.routes.GitRepoCloner")
     def test_analyze_returns_loc_and_churn(
-        self, mock_cloner_cls, mock_write_loc, mock_write_churn
+        self, mock_cloner_cls, mock_write_loc, mock_write_churn, mock_write_daily
     ):
         tmp_dir = tempfile.mkdtemp()
 
@@ -85,11 +86,12 @@ class TestAnalyzeEndpoint:
         finally:
             subprocess.run(["rm", "-rf", tmp_dir], check=True, capture_output=True)
 
+    @patch("src.api.routes.write_daily_churn_metrics")
     @patch("src.api.routes.write_churn_metric")
     @patch("src.api.routes.write_loc_metric")
     @patch("src.api.routes.GitRepoCloner")
     def test_analyze_defaults_date_range(
-        self, mock_cloner_cls, mock_write_loc, mock_write_churn
+        self, mock_cloner_cls, mock_write_loc, mock_write_churn, mock_write_daily
     ):
         """When start_date/end_date are omitted, they should default to last 7 days."""
         tmp_dir = tempfile.mkdtemp()
@@ -124,11 +126,12 @@ class TestAnalyzeEndpoint:
 
         assert response.status_code == 400
 
+    @patch("src.api.routes.write_daily_churn_metrics")
     @patch("src.api.routes.write_churn_metric")
     @patch("src.api.routes.write_loc_metric")
     @patch("src.api.routes.GitRepoCloner")
     def test_analyze_influx_failure_does_not_break_response(
-        self, mock_cloner_cls, mock_write_loc, mock_write_churn
+        self, mock_cloner_cls, mock_write_loc, mock_write_churn, mock_write_daily
     ):
         """Even if InfluxDB writes fail, the endpoint should still return 200."""
         tmp_dir = tempfile.mkdtemp()
@@ -143,6 +146,7 @@ class TestAnalyzeEndpoint:
 
             mock_write_loc.side_effect = Exception("InfluxDB down")
             mock_write_churn.side_effect = Exception("InfluxDB down")
+            mock_write_daily.side_effect = Exception("InfluxDB down")
 
             response = client.post(
                 "/analyze",

@@ -247,22 +247,29 @@ def count_loc_in_directory(directory: str) -> ProjectLOC:
     project = ProjectLOC(project_root=directory)
     package_map: dict[str, PackageLOC] = {}
 
-    for dirpath, _dirnames, filenames in os.walk(directory):
+    for dirpath, dirnames, filenames in os.walk(directory):
+        logger.debug(f"Scanning directory: {dirpath}")
         rel_dir = os.path.relpath(dirpath, directory)
         parts = rel_dir.split(os.sep)
 
+        # Skip hidden directories (.git, etc.) and known non-source dirs
         if any((p.startswith(".") and p != ".") or p in SKIP_DIRS for p in parts):
+            logger.debug(f"Skipped directory: {dirpath}")
+            dirnames.clear()  # prevent os.walk from recursing further
             continue
 
         for filename in sorted(filenames):
+            full_path = os.path.join(dirpath, filename)
             if not is_supported_file(filename):
+                logger.debug(f"Skipped unsupported file: {full_path}")
                 continue
 
-            full_path = os.path.join(dirpath, filename)
             file_loc = count_loc_in_file(full_path, project_root=directory)
             if file_loc is None:
+                logger.debug(f"Skipped unreadable file: {full_path}")
                 continue
 
+            logger.debug(f"Counted: {full_path} ({file_loc.loc} LOC)")
             project.files.append(file_loc)
             project.total_loc += file_loc.loc
             project.total_files += 1

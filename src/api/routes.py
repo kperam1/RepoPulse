@@ -11,7 +11,6 @@ from src.api.models import (
     AnalyzeRequest,
     AnalyzeResponse,
     ChurnResponse,
-    ErrorResponse,
     HealthResponse,
     JobRequest,
     JobResponse,
@@ -22,7 +21,7 @@ from src.api.models import (
     FileLOCResponse,
 )
 from src.metrics.loc import count_loc_in_directory
-from src.metrics.churn import compute_repo_churn, compute_daily_churn
+from src.metrics.churn import compute_daily_churn
 from src.core.influx import get_client, write_loc_metric, write_churn_metric, write_daily_churn_metrics
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
@@ -165,10 +164,6 @@ async def compute_loc(request: Request):
         ],
     )
 
-
-# --- Analyze Endpoint (clone -> LOC -> Churn -> InfluxDB) ---
-
-
 @router.post("/analyze", response_model=AnalyzeResponse, status_code=200)
 async def analyze_repo(request: Request):
     """Clone a public GitHub repo, compute LOC and churn metrics, write to InfluxDB, and return results."""
@@ -193,9 +188,9 @@ async def analyze_repo(request: Request):
     cloner = GitRepoCloner()
 
     try:
-        # 1. Clone the repo (full clone needed for commit history)
+        # 1. Clone the repo (full clone needed for commit history / churn)
         logger.info(f"Cloning {repo_url} …")
-        repo_path = cloner.clone(repo_url, shallow=True)
+        repo_path = cloner.clone(repo_url, shallow=False)
         logger.info(f"Clone complete → {repo_path}")
 
         # 2. Compute LOC
@@ -213,11 +208,23 @@ async def analyze_repo(request: Request):
         churn_summary["modified"] = min(churn_summary["added"], churn_summary["deleted"])
         churn_summary["total"] = churn_summary["added"] + churn_summary["deleted"]
 
-        # 4. Write metrics to InfluxDB
+        # 4. Write LOC metrics to InfluxDB
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
 
         try:
-            write_loc_metric(repo_name, project_loc.total_loc)
+            loc_payload = {
+                "repo_id": repo_name,
+                "repo_name": repo_name,
+                "branch": "main",
+                "language": "mixed",
+                "granularity": "project",
+                "total_loc": project_loc.total_loc,
+                "code_loc": project_loc.total_loc,
+                "comment_loc": project_loc.total_comment_lines,
+                "blank_loc": project_loc.total_blank_lines,
+                "collected_at": datetime.now(timezone.utc).isoformat(),
+            }
+            write_loc_metric(loc_payload)
         except Exception as influx_err:
             logger.warning(f"Failed to write LOC to InfluxDB: {influx_err}")
 
@@ -266,10 +273,7 @@ async def analyze_repo(request: Request):
             ],
         )
 
-
-
-
-            # 6. Return combined response
+        # 6. Return combined response
         return AnalyzeResponse(
             repo_url=repo_url,
             start_date=start_date,
