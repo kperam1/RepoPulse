@@ -13,8 +13,6 @@ from src.api.models import (
     AnalyzeRequest,
     AnalyzeResponse,
     ChurnResponse,
-    ChurnResultSummary,
-    ErrorResponse,
     HealthResponse,
     JobDetailResponse,
     JobRequest,
@@ -46,26 +44,8 @@ from src.api.models import (
     LocChangeResponse,
 )
 from src.metrics.loc import count_loc_in_directory
-from src.metrics.churn import compute_repo_churn, compute_daily_churn
-from src.metrics.wip import calculate_daily_wip_all_sprints, calculate_kanban_wip, TaigaFetchError
-from src.core.influx import (
-    get_client,
-    write_loc_metric,
-    write_timeseries_snapshot,
-    write_churn_metric,
-    write_daily_churn_metrics,
-    query_timeseries_snapshots_by_repo,
-    query_latest_snapshot,
-    query_snapshot_at_timestamp,
-    query_snapshots_by_commit,
-    query_commits_in_range,
-    query_compare_commits,
-    query_loc_trend,
-    query_snapshots_by_granularity,
-    query_current_loc_by_branch,
-    query_loc_change_between,
-    _parse_timestamp,
-)
+from src.metrics.churn import compute_daily_churn
+from src.core.influx import get_client, write_loc_metric, write_churn_metric, write_daily_churn_metrics
 from src.core.git_clone import GitRepoCloner, GitCloneError
 
 logger = logging.getLogger("repopulse")
@@ -332,7 +312,7 @@ async def compute_loc(request: Request):
         ],
     )
 
-@router.post("/analyze", response_model=ProjectLOCResponse, status_code=200)
+@router.post("/analyze", response_model=AnalyzeResponse, status_code=200)
 async def analyze_repo(request: Request):
     """Clone a public GitHub repo, compute LOC and churn metrics, write to InfluxDB, and return results."""
     try:
@@ -360,16 +340,27 @@ async def analyze_repo(request: Request):
     cloner = GitRepoCloner()
 
     try:
-        # 1. Clone the repo (full clone needed for commit history)
+        # 1. Clone the repo (full clone needed for commit history / churn)
         logger.info(f"Cloning {repo_url} …")
-        repo_path = cloner.clone(repo_url, shallow=True)
+        repo_path = cloner.clone(repo_url, shallow=False)
         logger.info(f"Clone complete → {repo_path}")
 
         # 2. Compute LOC
         project_loc = count_loc_in_directory(repo_path)
 
-        # 3. Extract git metadata & Write metrics to InfluxDB
-        # Derive a simple repo name from the URL
+        # 3. Compute daily churn
+        logger.info(f"Computing daily churn for {start_date} → {end_date}")
+        daily = compute_daily_churn(repo_path, start_date, end_date)
+        logger.info(f"Daily churn days: {len(daily)}")
+
+        churn_summary = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
+        for day_churn in daily.values():
+            churn_summary["added"] += day_churn["added"]
+            churn_summary["deleted"] += day_churn["deleted"]
+        churn_summary["modified"] = min(churn_summary["added"], churn_summary["deleted"])
+        churn_summary["total"] = churn_summary["added"] + churn_summary["deleted"]
+
+        # 4. Write LOC metrics to InfluxDB
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
         collected_at = datetime.now(timezone.utc).isoformat()
         
@@ -380,121 +371,19 @@ async def analyze_repo(request: Request):
         logger.info(f"Repository at commit {commit_hash[:8] if commit_hash else 'unknown'}")
 
         try:
-            write_loc_metric({
-                "repo_id": repo_url,
+            loc_payload = {
+                "repo_id": repo_name,
                 "repo_name": repo_name,
-                "branch": "HEAD",
-                "commit_hash": commit_hash,
+                "branch": "main",
                 "language": "mixed",
                 "granularity": "project",
-                "project_name": repo_name,
                 "total_loc": project_loc.total_loc,
                 "code_loc": project_loc.total_loc,
                 "comment_loc": project_loc.total_comment_lines,
                 "blank_loc": project_loc.total_blank_lines,
-                "collected_at": collected_at,
-            })
-            
-            # Write time-series snapshot for project-level metrics
-            if commit_hash:
-                write_timeseries_snapshot({
-                    "repo_id": repo_url,
-                    "repo_name": repo_name,
-                    "commit_hash": commit_hash,
-                    "commit_timestamp": commit_timestamp,
-                    "branch": "HEAD",
-                    "snapshot_timestamp": collected_at,
-                    "granularity": "project",
-                    "snapshot_type": "loc",
-                    "total_loc": project_loc.total_loc,
-                    "code_loc": project_loc.total_loc,
-                    "comment_loc": project_loc.total_comment_lines,
-                    "blank_loc": project_loc.total_blank_lines,
-                    "project_name": repo_name,
-                    "language": "mixed",
-                })
-            
-            # Write per-file metrics
-            for f in project_loc.files:
-                ext = os.path.splitext(f.path)[1].lower()
-                lang_map = {".py": "python", ".java": "java", ".ts": "typescript"}
-                lang = lang_map.get(ext, "unknown")
-                
-                write_loc_metric({
-                    "repo_id": repo_url,
-                    "repo_name": repo_name,
-                    "branch": "HEAD",
-                    "commit_hash": commit_hash,
-                    "language": lang,
-                    "granularity": "file",
-                    "project_name": repo_name,
-                    "file_path": f.path,
-                    "total_loc": f.loc,
-                    "code_loc": f.loc,
-                    "comment_loc": f.comment_lines,
-                    "blank_loc": f.blank_lines,
-                    "collected_at": collected_at,
-                })
-                
-                # Write time-series snapshot for file-level metrics
-                if commit_hash:
-                    write_timeseries_snapshot({
-                        "repo_id": repo_url,
-                        "repo_name": repo_name,
-                        "commit_hash": commit_hash,
-                        "commit_timestamp": commit_timestamp,
-                        "branch": "HEAD",
-                        "snapshot_timestamp": collected_at,
-                        "granularity": "file",
-                        "snapshot_type": "loc",
-                        "total_loc": f.loc,
-                        "code_loc": f.loc,
-                        "comment_loc": f.comment_lines,
-                        "blank_loc": f.blank_lines,
-                        "file_path": f.path,
-                        "project_name": repo_name,
-                        "language": lang,
-                    })
-            
-            # Write per-package metrics
-            for pkg in project_loc.packages:
-                write_loc_metric({
-                    "repo_id": repo_url,
-                    "repo_name": repo_name,
-                    "branch": "HEAD",
-                    "commit_hash": commit_hash,
-                    "language": "mixed",
-                    "granularity": "package",
-                    "project_name": repo_name,
-                    "package_name": pkg.package,
-                    "total_loc": pkg.loc,
-                    "code_loc": pkg.loc,
-                    "comment_loc": pkg.comment_lines,
-                    "blank_loc": 0,
-                    "collected_at": collected_at,
-                })
-                
-                # Write time-series snapshot for package-level metrics
-                if commit_hash:
-                    write_timeseries_snapshot({
-                        "repo_id": repo_url,
-                        "repo_name": repo_name,
-                        "commit_hash": commit_hash,
-                        "commit_timestamp": commit_timestamp,
-                        "branch": "HEAD",
-                        "snapshot_timestamp": collected_at,
-                        "granularity": "package",
-                        "snapshot_type": "loc",
-                        "total_loc": pkg.loc,
-                        "code_loc": pkg.loc,
-                        "comment_loc": pkg.comment_lines,
-                        "blank_loc": 0,
-                        "package_name": pkg.package,
-                        "project_name": repo_name,
-                        "language": "mixed",
-                    })
-            
-            logger.info(f"Wrote {len(project_loc.files) + len(project_loc.packages) + 1} metric points to InfluxDB")
+                "collected_at": datetime.now(timezone.utc).isoformat(),
+            }
+            write_loc_metric(loc_payload)
         except Exception as influx_err:
             logger.warning(f"Failed to write metrics to InfluxDB: {influx_err}")
 
@@ -581,10 +470,7 @@ async def analyze_repo(request: Request):
             ],
         )
 
-
-
-
-            # 6. Return combined response
+        # 6. Return combined response
         return AnalyzeResponse(
             repo_url=repo_url,
             start_date=start_date,

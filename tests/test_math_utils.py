@@ -1,4 +1,5 @@
 from src.math_utils import add
+import pytest
 
 
 def test_add_positive():
@@ -10,4 +11,4 @@ def test_add_negative_and_positive():
 
 
 def test_add_floats():
-    assert abs(add(0.1, 0.2) - 0.30000000000000004) < 1e-12
+    assert add(0.1, 0.2) == pytest.approx(0.3)

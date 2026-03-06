@@ -1,26 +1,33 @@
+import logging
 import os
 import subprocess
 
 from src.metrics.git_history import get_commit_history
 
+logger = logging.getLogger("repopulse.metrics.churn")
+
 
 def compute_repo_churn(repo_path: str, start_date: str, end_date: str) -> dict:
     commits = get_commit_history(repo_path, start_date, end_date)
+    logger.info(f"Churn: found {len(commits)} commits between {start_date} and {end_date}")
 
     total_added = 0
     total_deleted = 0
 
     for commit in commits:
         churn = compute_commit_churn(repo_path, commit["hash"])
+        logger.debug(f"Commit {commit['hash'][:8]}: +{churn['added']} -{churn['deleted']}")
         total_added += churn["added"]
         total_deleted += churn["deleted"]
 
-    return {
+    result = {
         "added": total_added,
         "deleted": total_deleted,
         "modified": min(total_added, total_deleted),
         "total": total_added + total_deleted,
     }
+    logger.info(f"Churn totals: {result}")
+    return result
 
 
 def compute_daily_churn(repo_path: str, start_date: str, end_date: str) -> dict[str, dict[str, int]]:

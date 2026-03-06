@@ -1,6 +1,9 @@
+import logging
 import os
 import subprocess
 from datetime import date, datetime, timezone
+
+logger = logging.getLogger("repopulse.metrics.git_history")
 
 
 def get_commit_history(
@@ -45,6 +48,8 @@ def get_commit_history(
         "--pretty=format:%H|%cI",
     ]
 
+    logger.info(f"git log command: {' '.join(cmd)}")
+
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -55,7 +60,9 @@ def get_commit_history(
         raise ValueError(f"git log failed: {result.stderr.strip()}")
 
     raw = result.stdout.strip()
+    logger.info(f"git log returned {len(raw.splitlines()) if raw else 0} lines of output")
     if not raw:
+        logger.info("No commits found in date range")
         return []
 
     commits: list[dict] = []

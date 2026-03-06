@@ -155,7 +155,7 @@ success "Containers started in detached mode."
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 success "============================================="
-success "  RepoPulse build completed successfully! 🚀"
+success "  RepoPulse build completed successfully! "
 success "============================================="
 echo ""
 info "API is running at:  http://localhost:8080/"

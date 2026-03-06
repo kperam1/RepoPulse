@@ -1,6 +1,6 @@
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.core.influx import write_loc_metric
 
@@ -23,7 +23,7 @@ def run_worker():
             "code_loc": 100,
             "comment_loc": 15,
             "blank_loc": 8,
-            "collected_at": datetime.utcnow().isoformat() + "Z",
+            "collected_at": datetime.now(timezone.utc).isoformat(),
         }
 
         try:
