@@ -501,3 +501,36 @@ class JobResultsResponse(BaseModel):
     loc: LOCResultSummary
     churn: ChurnResultSummary
 
+
+class ItemCycleTimeResponse(BaseModel):
+    item_id: int | None = None
+    item_ref: int | None = None
+    item_subject: str = ""
+    started_date: str
+    done_date: str
+    cycle_time_days: float
+
+
+class DailyCycleTimeResponse(BaseModel):
+    date: str
+    completed_count: int
+    total_cycle_time_days: float
+    average_cycle_time_days: float
+    median_cycle_time_days: float
+
+
+class SprintCycleTimeResponse(BaseModel):
+    sprint_id: int | None = None
+    sprint_name: str
+    date_range_start: str
+    date_range_end: str
+    item_cycle_times: list[ItemCycleTimeResponse] = []
+    daily_cycle_time: list[DailyCycleTimeResponse] = []
+
+
+class CycleTimeProjectResponse(BaseModel):
+    project_id: int
+    project_slug: str
+    sprints_count: int
+    sprints: list[SprintCycleTimeResponse] = []
+

@@ -3,6 +3,7 @@ import os
 import uuid
 import json
 from datetime import datetime, timedelta, timezone
+from datetime import date as _date, timedelta as _timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Request, Query
@@ -44,10 +45,32 @@ from src.api.models import (
     BranchMetricsResponse,
     BranchMetrics,
     LocChangeResponse,
+    CycleTimeProjectResponse,
+    SprintCycleTimeResponse,
+    ItemCycleTimeResponse,
+    DailyCycleTimeResponse,
 )
 from src.metrics.loc import count_loc_in_directory
 from src.metrics.churn import compute_repo_churn, compute_daily_churn
-from src.metrics.wip import calculate_daily_wip_all_sprints, calculate_kanban_wip, TaigaFetchError
+from src.metrics.wip import (
+    calculate_daily_wip_all_sprints,
+    calculate_kanban_wip,
+    TaigaFetchError,
+)
+from src.metrics.taiga_helpers import (
+    parse_taiga_slug,
+    fetch_taiga_project,
+    fetch_taiga_statuses,
+    fetch_taiga_sprints,
+    fetch_taiga_user_stories,
+    fetch_taiga_tasks,
+    fetch_taiga_item_history,
+    derive_wip_done_statuses,
+    filter_recent_sprints,
+    find_last_activity_date,
+    TaigaAPIError,
+)
+from src.metrics.cycle_time import compute_sprint_cycle_time
 from src.core.influx import (
     get_client,
     write_loc_metric,
@@ -1077,3 +1100,158 @@ async def get_loc_change(
     except Exception as e:
         logger.error(f"Error calculating change: {e}")
         return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+# --- Cycle Time Metric Endpoint ---
+
+
+@router.post("/metrics/cycle-time", response_model=CycleTimeProjectResponse)
+async def cycle_time_metric(request: Request):
+    body = await request.json()
+    taiga_url = body.get("taiga_url")
+    kanban_url = body.get("kanban_url")
+    recent_days = body.get("recent_days")
+
+    if not taiga_url and not kanban_url:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Provide either taiga_url or kanban_url"},
+        )
+
+    use_kanban = kanban_url is not None
+    board_url = kanban_url if use_kanban else taiga_url
+
+    try:
+        slug = parse_taiga_slug(board_url)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+
+    try:
+        project = fetch_taiga_project(slug)
+    except TaigaAPIError as e:
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+
+    project_id = project["id"]
+    project_slug = project.get("slug", slug)
+
+    try:
+        statuses = fetch_taiga_statuses(project_id, kind="task" if use_kanban else "userstory")
+    except TaigaAPIError as e:
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+
+    wip_status_names, done_status_names = derive_wip_done_statuses(statuses)
+
+    if use_kanban:
+        return await _cycle_time_kanban(
+            project_id, project_slug, statuses,
+            wip_status_names, done_status_names, recent_days,
+        )
+    else:
+        return await _cycle_time_scrum(
+            project_id, project_slug, statuses,
+            wip_status_names, done_status_names, recent_days,
+        )
+
+
+async def _cycle_time_scrum(
+    project_id: int,
+    project_slug: str,
+    statuses: list[dict],
+    wip_status_names: set[str],
+    done_status_names: set[str],
+    recent_days: int | None,
+):
+    try:
+        sprints = fetch_taiga_sprints(project_id)
+    except TaigaAPIError as e:
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+
+    if recent_days is not None:
+        sprints = filter_recent_sprints(sprints, recent_days)
+
+    if not sprints:
+        return JSONResponse(status_code=404, content={"detail": "No sprints found"})
+
+    sprint_results = []
+    for sprint in sprints:
+        sprint_id = sprint["id"]
+        sprint_name = sprint.get("name", "")
+        start_date = sprint.get("estimated_start", "")
+        end_date = sprint.get("estimated_finish", "")
+
+        try:
+            stories = fetch_taiga_user_stories(sprint_id)
+            for story in stories:
+                story["history"] = fetch_taiga_item_history("userstory", story["id"])
+        except TaigaAPIError as e:
+            return JSONResponse(status_code=503, content={"detail": str(e)})
+
+        result = compute_sprint_cycle_time(
+            stories, wip_status_names, done_status_names, start_date, end_date,
+        )
+
+        sprint_results.append(SprintCycleTimeResponse(
+            sprint_id=sprint_id,
+            sprint_name=sprint_name,
+            date_range_start=start_date,
+            date_range_end=end_date,
+            item_cycle_times=[ItemCycleTimeResponse(**ct) for ct in result["item_cycle_times"]],
+            daily_cycle_time=[DailyCycleTimeResponse(**d) for d in result["daily_cycle_time"]],
+        ))
+
+    return CycleTimeProjectResponse(
+        project_id=project_id,
+        project_slug=project_slug,
+        sprints_count=len(sprint_results),
+        sprints=sprint_results,
+    )
+
+
+async def _cycle_time_kanban(
+    project_id: int,
+    project_slug: str,
+    statuses: list[dict],
+    wip_status_names: set[str],
+    done_status_names: set[str],
+    recent_days: int | None,
+):
+    days = recent_days or 30
+
+    try:
+        tasks = fetch_taiga_tasks(project_id)
+        for task in tasks:
+            task["history"] = fetch_taiga_item_history("task", task["id"])
+    except TaigaAPIError as e:
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+
+    if not tasks:
+        return JSONResponse(status_code=404, content={"detail": "No tasks found"})
+
+    end_date = _date.today()
+    start_date = end_date - _timedelta(days=days)
+
+    last_activity = find_last_activity_date(tasks)
+    if last_activity and last_activity < start_date:
+        end_date = last_activity
+        start_date = end_date - _timedelta(days=days)
+
+    result = compute_sprint_cycle_time(
+        tasks, wip_status_names, done_status_names,
+        start_date.isoformat(), end_date.isoformat(),
+    )
+
+    sprint_entry = SprintCycleTimeResponse(
+        sprint_id=None,
+        sprint_name="kanban",
+        date_range_start=start_date.isoformat(),
+        date_range_end=end_date.isoformat(),
+        item_cycle_times=[ItemCycleTimeResponse(**ct) for ct in result["item_cycle_times"]],
+        daily_cycle_time=[DailyCycleTimeResponse(**d) for d in result["daily_cycle_time"]],
+    )
+
+    return CycleTimeProjectResponse(
+        project_id=project_id,
+        project_slug=project_slug,
+        sprints_count=1,
+        sprints=[sprint_entry],
+    )
