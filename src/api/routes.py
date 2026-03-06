@@ -266,7 +266,10 @@ async def analyze_repo(request: Request):
             ],
         )
 
-        # 6. Return combined response
+
+
+
+            # 6. Return combined response
         return AnalyzeResponse(
             repo_url=repo_url,
             start_date=start_date,
