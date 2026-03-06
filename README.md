@@ -478,7 +478,22 @@ curl -s -X POST http://localhost:8080/metrics/wip \
 }
 ```
 
-If the kanban board has no activity in the last 30 days, the response will automatically shift to show the 30 days before the last activity. You can tell by checking `date_range_start` and `date_range_end` in the response.
+**How it works with scrum boards (`taiga_url`):**
+1. Gets the project slug from the URL
+2. Pulls statuses and sprints from the Taiga API
+3. If `recent_days` is set, it only picks sprints that ended within that time window. If none match, it picks the most recent sprint instead.
+4. For each sprint, it gets the user stories and their status change history
+5. Goes through each day and checks what status each story was in on that day
+6. Groups them into **backlog** (first status), **wip** (in progress statuses), or **done** (closed statuses)
+
+**How it works with kanban boards (`kanban_url`):**
+1. Gets the project slug from the URL
+2. Pulls task statuses and all tasks from Taiga
+3. Looks at the last 30 days by default (or whatever `recent_days` you set)
+4. For each day, checks the task history to figure out each task's status
+5. Groups them the same way: backlog, wip, or done
+6. If the board has been inactive, it automatically shifts the window to show the last 30 days before the most recent activity
+7. Response uses `sprint_name: "kanban"` and `sprint_id: null`
 
 | What happened         | What you get back                  |
 |-----------------------|------------------------------------|
