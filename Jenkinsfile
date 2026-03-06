@@ -75,18 +75,19 @@ pipeline {
                 sh '''
                     echo "Tearing down leftover containers from Unit Tests"
                     docker compose down --volumes --remove-orphans || true
+                    docker compose -f docker-compose.ci.yml down --volumes --remove-orphans || true
 
-                    echo "Starting containers fresh"
-                    docker compose up -d
+                    echo "Starting containers fresh (CI compose – no host port bindings)"
+                    docker compose -f docker-compose.ci.yml up -d
 
                     echo "Waiting for API to become healthy"
                     MAX_RETRIES=30
                     RETRY=0
-                    until docker compose exec -T api curl -sf http://localhost:8080/health > /dev/null 2>&1; do
+                    until docker compose -f docker-compose.ci.yml exec -T api curl -sf http://localhost:8080/health > /dev/null 2>&1; do
                         RETRY=$((RETRY + 1))
                         if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
                             echo "API did not start within $MAX_RETRIES attempts"
-                            docker compose logs api
+                            docker compose -f docker-compose.ci.yml logs api
                             exit 1
                         fi
                         echo "  retry $RETRY/$MAX_RETRIES"
@@ -96,11 +97,11 @@ pipeline {
 
                     echo "Waiting for InfluxDB to be ready"
                     RETRY=0
-                    until docker compose exec -T influxdb influx ping > /dev/null 2>&1; do
+                    until docker compose -f docker-compose.ci.yml exec -T influxdb influx ping > /dev/null 2>&1; do
                         RETRY=$((RETRY + 1))
                         if [ "$RETRY" -ge 20 ]; then
                             echo "InfluxDB did not become ready in time"
-                            docker compose logs influxdb
+                            docker compose -f docker-compose.ci.yml logs influxdb
                             exit 1
                         fi
                         echo "  influx retry $RETRY/20"
@@ -110,14 +111,14 @@ pipeline {
 
                     echo "Running service-level tests"
 
-                    HTTP_CODE=$(docker compose exec -T api curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+                    HTTP_CODE=$(docker compose -f docker-compose.ci.yml exec -T api curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
                     if [ "$HTTP_CODE" != "200" ]; then
                         echo "FAIL: /health returned $HTTP_CODE"
                         exit 1
                     fi
                     echo "  PASS: GET /health -> 200"
 
-                    HTTP_CODE=$(docker compose exec -T api curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/docs)
+                    HTTP_CODE=$(docker compose -f docker-compose.ci.yml exec -T api curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/docs)
                     if [ "$HTTP_CODE" != "200" ]; then
                         echo "FAIL: /docs returned $HTTP_CODE"
                         exit 1
@@ -125,7 +126,7 @@ pipeline {
                     echo "  PASS: GET /docs -> 200"
 
                     echo "Testing POST /analyze (clone + LOC analysis) …"
-                    RESPONSE=$(docker compose exec -T api curl -s --max-time 120 -w "\nHTTP_STATUS:%{http_code}" -X POST http://localhost:8080/analyze -H "Content-Type: application/json" -d '{"repo_url":"https://github.com/pallets/markupsafe"}')
+                    RESPONSE=$(docker compose -f docker-compose.ci.yml exec -T api curl -s --max-time 120 -w "\nHTTP_STATUS:%{http_code}" -X POST http://localhost:8080/analyze -H "Content-Type: application/json" -d '{"repo_url":"https://github.com/pallets/markupsafe"}')
                     HTTP_CODE=$(echo "$RESPONSE" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
                     BODY=$(echo "$RESPONSE" | sed "/HTTP_STATUS:[0-9]*$/d")
                     if [ "$HTTP_CODE" != "200" ]; then
@@ -133,7 +134,7 @@ pipeline {
                         echo "Response body: $BODY"
                         echo ""
                         echo "=== API container logs ==="
-                        docker compose logs --tail=60 api
+                        docker compose -f docker-compose.ci.yml logs --tail=60 api
                         exit 1
                     fi
                     echo "  PASS: POST /analyze -> 200"
@@ -154,7 +155,10 @@ pipeline {
 
     post {
         always {
-            sh 'docker compose down --volumes --remove-orphans || true'
+            sh '''
+                docker compose -f docker-compose.ci.yml down --volumes --remove-orphans || true
+                docker compose down --volumes --remove-orphans || true
+            '''
         }
         success {
             echo 'Pipeline completed successfully - all tests passed!'
