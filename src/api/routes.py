@@ -1,9 +1,11 @@
 import logging
 import os
 import uuid
-from datetime import datetime, timezone, timedelta
+import json
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Query
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -12,13 +14,34 @@ from src.api.models import (
     AnalyzeResponse,
     ChurnResponse,
     HealthResponse,
+    JobDetailResponse,
     JobRequest,
     JobResponse,
+    JobResultsResponse,
     JobStatus,
     LOCRequest,
+    LOCResultSummary,
     ProjectLOCResponse,
     PackageLOCResponse,
+    ModuleLOCResponse,
     FileLOCResponse,
+    ResultMetadata,
+    WorkerHealthResponse,
+    WIPRequest,
+    WIPResponse,
+    TimeSeriesMetricSnapshot,
+    SnapshotHistoryResponse,
+    LatestSnapshotResponse,
+    CommitSnapshotsResponse,
+    SnapshotRecord,
+    SnapshotData,
+    CommitInfo,
+    CommitListResponse,
+    CommitComparisonResponse,
+    LocTrendResponse,
+    BranchMetricsResponse,
+    BranchMetrics,
+    LocChangeResponse,
 )
 from src.metrics.loc import count_loc_in_directory
 from src.metrics.churn import compute_daily_churn
@@ -28,8 +51,6 @@ from src.core.git_clone import GitRepoCloner, GitCloneError
 logger = logging.getLogger("repopulse")
 
 router = APIRouter()
-
-jobs_store: dict[str, JobResponse] = {}
 
 
 @router.get("/")
@@ -61,6 +82,7 @@ async def db_health():
 
 @router.post("/jobs", response_model=JobResponse, status_code=201)
 async def create_job(request: Request):
+    """Submit a repo analysis job to the worker pool."""
     body = await request.json()
     logger.info(f"Incoming job request: {body}")
 
@@ -76,21 +98,111 @@ async def create_job(request: Request):
         )
 
     job_id = str(uuid.uuid4())
+
+    # submit to the worker pool
+    pool = request.app.state.worker_pool
+    try:
+        pool.submit(
+            job_id=job_id,
+            repo_url=job_request.repo_url,
+            local_path=job_request.local_path,
+        )
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+
     created_at = datetime.now(timezone.utc).isoformat()
 
     job = JobResponse(
         job_id=job_id,
-        status=JobStatus.PENDING,
+        status=JobStatus.QUEUED,
         repo_url=job_request.repo_url,
         local_path=job_request.local_path,
         created_at=created_at,
-        message="Job submitted successfully",
+        message="Job queued for processing",
+    )
+    logger.info(f"Job queued: {job_id}")
+    return job
+
+
+@router.get("/jobs/{job_id}", response_model=JobDetailResponse)
+async def get_job(job_id: str, request: Request):
+    """Get the current status and result of a job."""
+    pool = request.app.state.worker_pool
+    record = pool.get_job(job_id)
+    if record is None:
+        return JSONResponse(status_code=404, content={"detail": "Job not found"})
+    return JobDetailResponse(**record.to_dict())
+
+
+@router.get("/jobs/{job_id}/results", response_model=JobResultsResponse)
+async def get_job_results(job_id: str, request: Request):
+    """Retrieve the formatted metric results (LOC + Churn) for a completed job.
+
+    Results are cached in the worker pool's in-memory job store,
+    so repeated calls return instantly without re-computation.
+    """
+    pool = request.app.state.worker_pool
+    record = pool.get_job(job_id)
+
+    if record is None:
+        return JSONResponse(status_code=404, content={"detail": "Job not found"})
+
+    if record.status != "completed":
+        return JSONResponse(
+            status_code=200,
+            content={
+                "job_id": record.job_id,
+                "status": record.status,
+                "message": f"Job is {record.status}. Results are not available yet.",
+            },
+        )
+
+    result = record.result or {}
+    churn = result.get("churn", {})
+
+    metadata = ResultMetadata(
+        repository=record.repo_url or record.local_path or "unknown",
+        analysed_at=record.completed_at or "",
+        scope="project",
     )
 
-    jobs_store[job_id] = job
-    logger.info(f"Job created: {job_id}")
+    loc_summary = LOCResultSummary(
+        total_loc=result.get("total_loc", 0),
+        total_files=result.get("total_files", 0),
+        total_blank_lines=result.get("total_blank_lines", 0),
+        total_excluded_lines=result.get("total_excluded_lines", 0),
+        total_comment_lines=result.get("total_comment_lines", 0),
+        total_weighted_loc=result.get("total_weighted_loc", 0.0),
+    )
 
-    return job
+    churn_summary = ChurnResultSummary(
+        added=churn.get("added", 0),
+        deleted=churn.get("deleted", 0),
+        modified=churn.get("modified", 0),
+        total=churn.get("total", 0),
+    )
+
+    return JobResultsResponse(
+        job_id=record.job_id,
+        status=record.status,
+        metadata=metadata,
+        loc=loc_summary,
+        churn=churn_summary,
+    )
+
+
+@router.get("/jobs", response_model=list[JobDetailResponse])
+async def list_jobs(request: Request):
+    """List all jobs with their statuses."""
+    pool = request.app.state.worker_pool
+    return [JobDetailResponse(**j) for j in pool.list_jobs()]
+
+
+@router.get("/workers/health", response_model=WorkerHealthResponse)
+async def workers_health(request: Request):
+    """Return worker pool health: pool size, active/queued/completed counts."""
+    pool = request.app.state.worker_pool
+    return WorkerHealthResponse(**pool.health())
 
 
 # --- LOC Metric Endpoint ---
@@ -131,12 +243,14 @@ async def compute_loc(request: Request):
         total_blank_lines=project_loc.total_blank_lines,
         total_excluded_lines=project_loc.total_excluded_lines,
         total_comment_lines=project_loc.total_comment_lines,
+        total_weighted_loc=project_loc.total_weighted_loc,
         packages=[
             PackageLOCResponse(
                 package=pkg.package,
                 loc=pkg.loc,
                 file_count=pkg.file_count,
                 comment_lines=pkg.comment_lines,
+                weighted_loc=pkg.weighted_loc,
                 files=[
                     FileLOCResponse(
                         path=f.path,
@@ -145,11 +259,44 @@ async def compute_loc(request: Request):
                         blank_lines=f.blank_lines,
                         excluded_lines=f.excluded_lines,
                         comment_lines=f.comment_lines,
+                        weighted_loc=f.weighted_loc,
                     )
                     for f in pkg.files
                 ],
             )
             for pkg in project_loc.packages
+        ],
+        modules=[
+            ModuleLOCResponse(
+                module=m.module,
+                loc=m.loc,
+                package_count=len(m.packages),
+                file_count=m.file_count,
+                comment_lines=m.comment_lines,
+                packages=[
+                    PackageLOCResponse(
+                        package=p.package,
+                        loc=p.loc,
+                        file_count=p.file_count,
+                        comment_lines=p.comment_lines,
+                        weighted_loc=p.weighted_loc,
+                        files=[
+                            FileLOCResponse(
+                                path=f.path,
+                                total_lines=f.total_lines,
+                                loc=f.loc,
+                                blank_lines=f.blank_lines,
+                                excluded_lines=f.excluded_lines,
+                                comment_lines=f.comment_lines,
+                                weighted_loc=f.weighted_loc,
+                            )
+                            for f in p.files
+                        ],
+                    )
+                    for p in m.packages
+                ],
+            )
+            for m in project_loc.modules
         ],
         files=[
             FileLOCResponse(
@@ -159,6 +306,7 @@ async def compute_loc(request: Request):
                 blank_lines=f.blank_lines,
                 excluded_lines=f.excluded_lines,
                 comment_lines=f.comment_lines,
+                weighted_loc=f.weighted_loc,
             )
             for f in project_loc.files
         ],
@@ -167,7 +315,11 @@ async def compute_loc(request: Request):
 @router.post("/analyze", response_model=AnalyzeResponse, status_code=200)
 async def analyze_repo(request: Request):
     """Clone a public GitHub repo, compute LOC and churn metrics, write to InfluxDB, and return results."""
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception as e:
+        logger.error(f"Failed to parse request body: {e}")
+        return JSONResponse(status_code=400, content={"detail": f"Invalid JSON body: {e}"})
     logger.info(f"Analyze request: {body}")
 
     try:
@@ -210,6 +362,13 @@ async def analyze_repo(request: Request):
 
         # 4. Write LOC metrics to InfluxDB
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
+        collected_at = datetime.now(timezone.utc).isoformat()
+        
+        # Get commit information from cloned repo
+        commit_hash = cloner.commit_hash  # Automatically extracted during clone
+        commit_timestamp = GitRepoCloner.get_commit_timestamp(repo_path, commit_hash)
+        
+        logger.info(f"Repository at commit {commit_hash[:8] if commit_hash else 'unknown'}")
 
         try:
             loc_payload = {
@@ -226,17 +385,25 @@ async def analyze_repo(request: Request):
             }
             write_loc_metric(loc_payload)
         except Exception as influx_err:
-            logger.warning(f"Failed to write LOC to InfluxDB: {influx_err}")
+            logger.warning(f"Failed to write metrics to InfluxDB: {influx_err}")
 
+        # 4. Compute churn & write to InfluxDB
+        churn = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
+        churn_daily = {}
         try:
-            write_churn_metric(repo_url, start_date, end_date, churn_summary)
-        except Exception as influx_err:
-            logger.warning(f"Failed to write churn to InfluxDB: {influx_err}")
+            churn = compute_repo_churn(repo_path, start_date, end_date)
+            churn_daily = compute_daily_churn(repo_path, start_date, end_date)
+            logger.info(f"Churn computed: {churn['total']} total, {len(churn_daily)} days")
 
-        try:
-            write_daily_churn_metrics(repo_url, daily)
-        except Exception as influx_err:
-            logger.warning(f"Failed to write daily churn to InfluxDB: {influx_err}")
+            try:
+                write_churn_metric(repo_url, start_date, end_date, churn)
+                if churn_daily:
+                    write_daily_churn_metrics(repo_url, churn_daily)
+                logger.info("Wrote churn metrics to InfluxDB")
+            except Exception as influx_err:
+                logger.warning(f"Failed to write churn metrics to InfluxDB: {influx_err}")
+        except Exception as churn_err:
+            logger.warning(f"Churn computation failed: {churn_err}")
 
         # 5. Build LOC response
         loc_response = ProjectLOCResponse(
@@ -246,28 +413,58 @@ async def analyze_repo(request: Request):
             total_blank_lines=project_loc.total_blank_lines,
             total_excluded_lines=project_loc.total_excluded_lines,
             total_comment_lines=project_loc.total_comment_lines,
+            total_weighted_loc=project_loc.total_weighted_loc,
             packages=[
                 PackageLOCResponse(
                     package=pkg.package,
                     loc=pkg.loc,
                     file_count=pkg.file_count,
                     comment_lines=pkg.comment_lines,
+                    weighted_loc=pkg.weighted_loc,
                     files=[
                         FileLOCResponse(
                             path=f.path, total_lines=f.total_lines, loc=f.loc,
                             blank_lines=f.blank_lines, excluded_lines=f.excluded_lines,
-                            comment_lines=f.comment_lines,
+                            comment_lines=f.comment_lines, weighted_loc=f.weighted_loc,
                         )
                         for f in pkg.files
                     ],
                 )
                 for pkg in project_loc.packages
             ],
+            modules=[
+                ModuleLOCResponse(
+                    module=m.module,
+                    loc=m.loc,
+                    package_count=len(m.packages),
+                    file_count=m.file_count,
+                    comment_lines=m.comment_lines,
+                    packages=[
+                        PackageLOCResponse(
+                            package=p.package,
+                            loc=p.loc,
+                            file_count=p.file_count,
+                            comment_lines=p.comment_lines,
+                            weighted_loc=p.weighted_loc,
+                            files=[
+                                FileLOCResponse(
+                                    path=f.path, total_lines=f.total_lines, loc=f.loc,
+                                    blank_lines=f.blank_lines, excluded_lines=f.excluded_lines,
+                                    comment_lines=f.comment_lines, weighted_loc=f.weighted_loc,
+                                )
+                                for f in p.files
+                            ],
+                        )
+                        for p in m.packages
+                    ],
+                )
+                for m in project_loc.modules
+            ],
             files=[
                 FileLOCResponse(
                     path=f.path, total_lines=f.total_lines, loc=f.loc,
                     blank_lines=f.blank_lines, excluded_lines=f.excluded_lines,
-                    comment_lines=f.comment_lines,
+                    comment_lines=f.comment_lines, weighted_loc=f.weighted_loc,
                 )
                 for f in project_loc.files
             ],
@@ -292,3 +489,487 @@ async def analyze_repo(request: Request):
     finally:
         cloner.cleanup()
 
+
+# --- WIP Metric Endpoint ---
+
+
+@router.post("/metrics/wip", response_model=WIPResponse, status_code=200)
+async def compute_wip(request: Request):
+    """Compute WIP (Work In Progress) metric for a Taiga board."""
+    try:
+        body = await request.json()
+    except Exception as e:
+        # Normalize JSON decode errors to a clear 400 response rather than 500
+        try:
+            from json import JSONDecodeError
+            if isinstance(e, JSONDecodeError):
+                logger.warning(f"Invalid JSON body: {e}")
+                return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+        except Exception:
+            pass
+        logger.warning(f"Failed to parse request body: {e}")
+        return JSONResponse(status_code=400, content={"detail": "Invalid request body"})
+    logger.info(f"WIP metric request: {body}")
+
+    try:
+        wip_request = WIPRequest(**body)
+    except ValidationError as e:
+        errors = e.errors()
+        messages = [err["msg"] for err in errors]
+        logger.warning(f"WIP validation failed: {messages}")
+        return JSONResponse(
+            status_code=400,
+            content={"detail": messages},
+        )
+
+    kanban_url = wip_request.kanban_url
+    taiga_url = wip_request.taiga_url
+    recent = wip_request.recent_days
+
+    # If kanban_url is provided, use kanban mode (task-level WIP)
+    use_kanban = kanban_url is not None
+    board_url = kanban_url if use_kanban else taiga_url
+
+    try:
+        if use_kanban:
+            logger.info(f"Calculating kanban WIP metrics: {board_url} recent_days={recent}")
+            kanban_metric = calculate_kanban_wip(board_url, recent_days=recent)
+
+            sprint_resp = {
+                "project_id": kanban_metric.project_id,
+                "project_slug": kanban_metric.project_slug,
+                "sprint_id": None,
+                "sprint_name": "kanban",
+                "date_range_start": kanban_metric.date_range_start,
+                "date_range_end": kanban_metric.date_range_end,
+                "daily_wip": [
+                    {
+                        "date": daily.date,
+                        "wip_count": daily.wip_count,
+                        "backlog_count": daily.backlog_count,
+                        "done_count": daily.done_count,
+                    }
+                    for daily in kanban_metric.daily_wip
+                ],
+            }
+
+            response = WIPResponse(
+                project_id=kanban_metric.project_id,
+                project_slug=kanban_metric.project_slug,
+                sprints_count=1,
+                sprints=[sprint_resp],
+            )
+
+            logger.info(f"Kanban WIP metrics calculated: {len(kanban_metric.daily_wip)} days")
+            return response
+
+        # Scrum mode: user-story WIP per sprint
+        logger.info(f"Calculating daily WIP metrics for all sprints: {board_url} recent_days={recent}")
+        sprints_data = calculate_daily_wip_all_sprints(board_url, recent_days=recent)
+
+        if not sprints_data:
+            logger.warning(f"No sprints found for {board_url}")
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "No sprints found for the specified project"},
+            )
+
+        # Extract project info from first sprint result
+        project_id = sprints_data[0].project_id
+        project_slug = sprints_data[0].project_slug
+
+        # Build response with all sprints
+        sprints_response = []
+        for metric in sprints_data:
+            sprint_resp = {
+                "project_id": metric.project_id,
+                "project_slug": metric.project_slug,
+                "sprint_id": metric.sprint_id,
+                "sprint_name": metric.sprint_name,
+                "date_range_start": metric.date_range_start,
+                "date_range_end": metric.date_range_end,
+                "daily_wip": [
+                    {
+                        "date": daily.date,
+                        "wip_count": daily.wip_count,
+                        "backlog_count": daily.backlog_count,
+                        "done_count": daily.done_count,
+                    }
+                    for daily in metric.daily_wip
+                ],
+            }
+            sprints_response.append(sprint_resp)
+
+        response = WIPResponse(
+            project_id=project_id,
+            project_slug=project_slug,
+            sprints_count=len(sprints_response),
+            sprints=sprints_response,
+        )
+
+        logger.info(f"Daily WIP metrics calculated for {len(sprints_response)} sprints")
+        return response
+
+    except ValueError as e:
+        logger.warning(f"Invalid Taiga URL: {e}")
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    except TaigaFetchError as e:
+        logger.error(f"Taiga API error: {e}")
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+    except Exception as e:
+        logger.error(f"WIP metric calculation failed: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/latest", response_model=LatestSnapshotResponse)
+async def get_latest_snapshot(repo_id: str, granularity: str = Query("project")):
+    """Get the most recent metric snapshot for a repository."""
+    try:
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        snapshot_data = query_latest_snapshot(repo_id, granularity)
+        
+        if not snapshot_data:
+            return LatestSnapshotResponse(
+                repo_id=repo_id,
+                repo_name="unknown",
+                latest_snapshot=None
+            )
+        
+        snapshot_record = SnapshotRecord(
+            timestamp=snapshot_data["time"].isoformat() if snapshot_data["time"] else "",
+            repo_id=snapshot_data.get("repo_id", ""),
+            repo_name=snapshot_data.get("repo_name", ""),
+            commit_hash=snapshot_data.get("commit_hash", ""),
+            branch=snapshot_data.get("branch", ""),
+            granularity=snapshot_data.get("granularity", ""),
+            metrics=SnapshotData(
+                total_loc=0,
+                code_loc=0,
+                comment_loc=0,
+                blank_loc=0
+            ),
+            file_path=snapshot_data.get("file_path"),
+            package_name=snapshot_data.get("package_name")
+        )
+        
+        return LatestSnapshotResponse(
+            repo_id=repo_id,
+            repo_name=snapshot_data.get("repo_name", ""),
+            latest_snapshot=snapshot_record
+        )
+    except Exception as e:
+        logger.error(f"Error querying latest snapshot: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/range", response_model=SnapshotHistoryResponse)
+async def get_snapshot_history(
+    repo_id: str,
+    start_time: str = Query(..., description="Start timestamp (ISO 8601)"),
+    end_time: str = Query(..., description="End timestamp (ISO 8601)"),
+    granularity: str = Query("project", description="Granularity filter")
+):
+    try:
+        start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+        
+        if start_dt >= end_dt:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "start_time must be before end_time"}
+            )
+        
+        snapshots_data = query_timeseries_snapshots_by_repo(
+            repo_id,
+            start_dt,
+            end_dt,
+            granularity if granularity != "all" else None
+        )
+        
+        snapshots = []
+        repo_name = "unknown"
+        
+        for snap in snapshots_data:
+            if not repo_name or repo_name == "unknown":
+                repo_name = snap.get("repo_name", "unknown")
+            
+            snapshot_record = SnapshotRecord(
+                timestamp=snap["time"].isoformat() if snap.get("time") else "",
+                repo_id=snap.get("repo_id", ""),
+                repo_name=snap.get("repo_name", ""),
+                commit_hash=snap.get("commit_hash", ""),
+                branch=snap.get("branch", ""),
+                granularity=snap.get("granularity", ""),
+                metrics=SnapshotData(
+                    total_loc=0,
+                    code_loc=0,
+                    comment_loc=0,
+                    blank_loc=0
+                ),
+                file_path=snap.get("file_path"),
+                package_name=snap.get("package_name")
+            )
+            snapshots.append(snapshot_record)
+        
+        return SnapshotHistoryResponse(
+            repo_id=repo_id,
+            repo_name=repo_name,
+            granularity=granularity,
+            start_time=start_time,
+            end_time=end_time,
+            snapshots=snapshots,
+            count=len(snapshots)
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Invalid timestamp format: {e}"}
+        )
+    except Exception as e:
+        logger.error(f"Error querying snapshot history: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/at/{timestamp}", response_model=SnapshotRecord)
+async def get_snapshot_at_time(repo_id: str, timestamp: str):
+    try:
+        target_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        
+        snapshot_data = query_snapshot_at_timestamp(repo_id, target_dt)
+        
+        if not snapshot_data:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": f"No snapshot found for {repo_id} at or before {timestamp}"}
+            )
+        
+        return SnapshotRecord(
+            timestamp=snapshot_data["time"].isoformat() if snapshot_data.get("time") else "",
+            repo_id=snapshot_data.get("repo_id", ""),
+            repo_name=snapshot_data.get("repo_name", ""),
+            commit_hash=snapshot_data.get("commit_hash", ""),
+            branch=snapshot_data.get("branch", ""),
+            granularity=snapshot_data.get("granularity", ""),
+            metrics=SnapshotData(
+                total_loc=0,
+                code_loc=0,
+                comment_loc=0,
+                blank_loc=0
+            ),
+            file_path=snapshot_data.get("file_path"),
+            package_name=snapshot_data.get("package_name")
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Invalid timestamp format: {e}"}
+        )
+    except Exception as e:
+        logger.error(f"Error querying snapshot: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/snapshots/{repo_id}/commit/{commit_hash}", response_model=CommitSnapshotsResponse)
+async def get_snapshots_for_commit(repo_id: str, commit_hash: str):
+    try:
+        snapshots_data = query_snapshots_by_commit(repo_id, commit_hash)
+        
+        snapshots = []
+        repo_name = "unknown"
+        
+        for snap in snapshots_data:
+            if not repo_name or repo_name == "unknown":
+                repo_name = snap.get("repo_name", "unknown")
+            
+            snapshot_record = SnapshotRecord(
+                timestamp=snap["time"].isoformat() if snap.get("time") else "",
+                repo_id=snap.get("repo_id", ""),
+                repo_name=snap.get("repo_name", ""),
+                commit_hash=snap.get("commit_hash", ""),
+                branch=snap.get("branch", ""),
+                granularity=snap.get("granularity", ""),
+                metrics=SnapshotData(
+                    total_loc=0,
+                    code_loc=0,
+                    comment_loc=0,
+                    blank_loc=0
+                ),
+                file_path=snap.get("file_path"),
+                package_name=snap.get("package_name")
+            )
+            snapshots.append(snapshot_record)
+        
+        return CommitSnapshotsResponse(
+            repo_id=repo_id,
+            repo_name=repo_name,
+            commit_hash=commit_hash,
+            snapshots=snapshots,
+            count=len(snapshots)
+        )
+    except Exception as e:
+        logger.error(f"Error querying commit snapshots: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/commits/{repo_id}", response_model=CommitListResponse)
+async def get_commits_in_range(
+    repo_id: str,
+    start_time: str = Query(...),
+    end_time: str = Query(...),
+    branch: Optional[str] = Query(None)
+):
+    try:
+        start = _parse_timestamp(start_time)
+        end = _parse_timestamp(end_time)
+        
+        if not start or not end:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if start >= end:
+            return JSONResponse(status_code=400, content={"detail": "start_time must be before end_time"})
+        
+        commits_data = query_commits_in_range(repo_id, start, end, branch)
+        
+        commits = [
+            CommitInfo(
+                commit_hash=c.get("commit_hash", ""),
+                branch=c.get("branch", ""),
+                time=c["time"].isoformat() if c.get("time") else ""
+            )
+            for c in commits_data
+        ]
+        
+        return CommitListResponse(
+            repo_id=repo_id,
+            start_time=start.isoformat(),
+            end_time=end.isoformat(),
+            branch=branch,
+            commits=commits,
+            count=len(commits)
+        )
+    except Exception as e:
+        logger.error(f"Error querying commits: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/commits/{repo_id}/compare", response_model=CommitComparisonResponse)
+async def compare_commits(
+    repo_id: str,
+    commit1: str = Query(...),
+    commit2: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        comparison = query_compare_commits(repo_id, commit1, commit2, granularity)
+        
+        return CommitComparisonResponse(
+            repo_id=comparison["repo_id"],
+            commit1=comparison["commit1"],
+            commit2=comparison["commit2"],
+            granularity=comparison["granularity"],
+            snapshots_commit1=comparison["snapshots_commit1"],
+            snapshots_commit2=comparison["snapshots_commit2"]
+        )
+    except Exception as e:
+        logger.error(f"Error comparing commits: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/trend/{repo_id}", response_model=LocTrendResponse)
+async def get_loc_trend(
+    repo_id: str,
+    start_time: str = Query(...),
+    end_time: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        start = _parse_timestamp(start_time)
+        end = _parse_timestamp(end_time)
+        
+        if not start or not end:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if start >= end:
+            return JSONResponse(status_code=400, content={"detail": "start_time must be before end_time"})
+        
+        trend_data = query_loc_trend(repo_id, start, end, granularity)
+        
+        trend = [
+            {"time": t["time"].isoformat() if t.get("time") else "", "total_loc": t.get("total_loc", 0)}
+            for t in trend_data
+        ]
+        
+        return LocTrendResponse(
+            repo_id=repo_id,
+            granularity=granularity,
+            start_time=start.isoformat(),
+            end_time=end.isoformat(),
+            trend=trend,
+            count=len(trend)
+        )
+    except Exception as e:
+        logger.error(f"Error querying trend: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/by-branch/{repo_id}", response_model=BranchMetricsResponse)
+async def get_branch_metrics(repo_id: str):
+    try:
+        branch_data = query_current_loc_by_branch(repo_id)
+        
+        branches = [
+            BranchMetrics(
+                branch=b.get("branch", ""),
+                total_loc=b.get("total_loc", 0),
+                updated_at=b["time"].isoformat() if b.get("time") else ""
+            )
+            for b in branch_data
+        ]
+        
+        return BranchMetricsResponse(
+            repo_id=repo_id,
+            branches=branches,
+            count=len(branches)
+        )
+    except Exception as e:
+        logger.error(f"Error querying branch metrics: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@router.get("/metrics/timeseries/change/{repo_id}", response_model=LocChangeResponse)
+async def get_loc_change(
+    repo_id: str,
+    timestamp1: str = Query(...),
+    timestamp2: str = Query(...),
+    granularity: str = Query("project")
+):
+    try:
+        ts1 = _parse_timestamp(timestamp1)
+        ts2 = _parse_timestamp(timestamp2)
+        
+        if not ts1 or not ts2:
+            return JSONResponse(status_code=400, content={"detail": "Invalid timestamp format"})
+        
+        if granularity not in ("project", "package", "file"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "granularity must be 'project', 'package', or 'file'"}
+            )
+        
+        change = query_loc_change_between(repo_id, ts1, ts2, granularity)
+        
+        return LocChangeResponse(**change)
+    except Exception as e:
+        logger.error(f"Error calculating change: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})

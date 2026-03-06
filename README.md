@@ -51,82 +51,153 @@ A tool that analyzes GitHub repositories and computes Lines of Code (LOC) metric
 
 Once running, the API is at **http://localhost:8080**. Interactive docs at [http://localhost:8080/docs](http://localhost:8080/docs).
 
-| Method | Path           | Description                                      |
-|--------|----------------|--------------------------------------------------|
-| GET    | `/`            | Welcome message                                  |
-| GET    | `/health`      | Health check                                     |
-| GET    | `/health/db`   | InfluxDB connection check                        |
-| POST   | `/jobs`        | Submit a repository analysis job                 |
-| POST   | `/metrics/loc` | Compute LOC for a local repo path                |
-| POST   | `/analyze`     | **Clone a GitHub repo → compute LOC → store in InfluxDB** |
+| Method | Path             | Description                                      |
+|--------|------------------|--------------------------------------------------|
+| GET    | `/`              | Welcome message                                  |
+| GET    | `/health`        | Health check                                     |
+| GET    | `/health/db`     | InfluxDB connection check                        |
+| POST   | `/jobs`          | Submit a repo analysis job (queued to worker pool)|
+| GET    | `/jobs/{job_id}` | Get job status and results                       |
+| GET    | `/jobs/{job_id}/results` | Get structured metric results (LOC + Churn) |
+| GET    | `/workers/health`| Worker pool health (pool size, queue depth, etc.)|
+| POST   | `/metrics/loc`   | Compute LOC for a local repo path                |
+| POST   | `/analyze`       | Clone a GitHub repo, compute LOC, store in InfluxDB |
+| POST   | `/metrics/wip`   | Compute WIP metrics from a Taiga board              |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/latest` | Latest snapshot |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/range` | Snapshots in date range |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/at/{timestamp}` | Point-in-time snapshot |
+| GET    | `/metrics/timeseries/snapshots/{repo_id}/commit/{commit_hash}` | Snapshots for commit |
+| GET    | `/metrics/timeseries/commits/{repo_id}` | Commits in date range |
+| GET    | `/metrics/timeseries/commits/{repo_id}/compare` | Compare two commits |
+| GET    | `/metrics/timeseries/trend/{repo_id}` | LOC trend over time |
+| GET    | `/metrics/timeseries/by-branch/{repo_id}` | Latest LOC per branch |
+| GET    | `/metrics/timeseries/change/{repo_id}` | LOC change between timestamps |
 
-### Testing the `/analyze` endpoint
+### Testing the `/jobs` endpoint
 
-This is the main endpoint. Give it a public GitHub URL and it clones the repo, counts lines of code, writes the results to InfluxDB, and returns everything.
+`POST /jobs` is the main way to submit analysis work. Pass either a `repo_url` (public GitHub URL) or a `local_path` (absolute path to a repo already on disk). The job runs in the background via the worker pool.
+
+#### Submit a job with a GitHub URL
 
 **Linux / macOS:**
 
 ```sh
-curl -X POST http://localhost:8080/analyze \
+curl -s -X POST http://localhost:8080/jobs \
   -H "Content-Type: application/json" \
-  -d '{"repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git"}'
+  -d '{"repo_url": "https://github.com/SimplifyJobs/Summer2026-Internships.git"}' | python3 -m json.tool
 ```
 
-**Windows PowerShell (recommended):**
+#### Submit a job with a local path
 
-```powershell
-$body = @{
-  repo_url = "https://github.com/SimplifyJobs/Summer2026-Internships.git"
-} | ConvertTo-Json
+If the repo is already cloned on the machine running RepoPulse (inside the container), you can pass `local_path` instead:
 
-Invoke-RestMethod -Uri http://localhost:8080/analyze -Method POST -ContentType "application/json" -Body $body
+```sh
+curl -s -X POST http://localhost:8080/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"local_path": "/app/src"}' | python3 -m json.tool
 ```
 
-**Windows CMD:**
+#### Check job status and results
 
-```cmd
-curl.exe -X POST http://localhost:8080/analyze -H "Content-Type: application/json" -d "{\"repo_url\": \"https://github.com/SimplifyJobs/Summer2026-Internships.git\"}"
+Use the `job_id` from the submit response to poll for results:
+
+```sh
+curl -s http://localhost:8080/jobs/<job_id> | python3 -m json.tool
 ```
 
-Example response (trimmed):
+After a job completes, the metrics are stored in InfluxDB and show up on the Grafana dashboard automatically.
+
+### Retrieve structured metric results
+
+Once a job completes, use `GET /jobs/{job_id}/results` to get a structured JSON response with LOC and Code Churn metrics plus metadata. Results are cached in memory for quick retrieval — repeated calls return instantly.
+
+```sh
+curl -s http://localhost:8080/jobs/<job_id>/results | python3 -m json.tool
+```
+
+**Example response:**
+
 ```json
 {
-  "project_root": "/tmp/...",
-  "total_loc": 1958,
-  "total_files": 3,
-  "total_blank_lines": 42,
-  "total_excluded_lines": 0,
-  "total_comment_lines": 8,
-  "packages": ["..."],
-  "files": [
-    {
-      "path": "README.md",
-      "total_lines": 1200,
-      "loc": 980,
-      "blank_lines": 20,
-      "excluded_lines": 0,
-      "comment_lines": 0
-    }
-  ]
+  "job_id": "abc-123",
+  "status": "completed",
+  "metadata": {
+    "repository": "https://github.com/owner/repo",
+    "analysed_at": "2026-02-27T12:00:00+00:00",
+    "scope": "project"
+  },
+  "loc": {
+    "total_loc": 1250,
+    "total_files": 15,
+    "total_blank_lines": 180,
+    "total_excluded_lines": 42,
+    "total_comment_lines": 95,
+    "total_weighted_loc": 1297.5
+  },
+  "churn": {
+    "added": 142,
+    "deleted": 38,
+    "modified": 38,
+    "total": 180
+  }
 }
 ```
 
-After calling `/analyze`, the metrics are stored in InfluxDB and show up on the Grafana dashboard automatically.
+| Scenario | Behaviour |
+|---|---|
+| Job completed | Returns full LOC + churn + metadata |
+| Job still running | Returns `{ "status": "processing", "message": "..." }` |
+| Job ID not found | `404 Not Found` with `{ "detail": "Job not found" }` |
+
+## Time-Series Metrics
+
+Time-series LOC metrics linked to Git commits. See the endpoint table above for all 9 available queries. Data captured: repo, commit hash, branch, timestamp, LOC breakdown, granularity.
+
+### Testing
+
+All 123 unit tests run during `./build.sh` and pass in ~2 seconds (mocked, no InfluxDB needed).
+
+For integration testing, query the running API:
+```sh
+curl -s "http://localhost:8080/metrics/timeseries/snapshots/test-repo/latest?granularity=project" | python3 -m json.tool
+```
 
 ## Grafana Dashboard
 
-Grafana is auto-provisioned with the InfluxDB datasource and a LOC metrics dashboard.
+Grafana is auto-provisioned with the InfluxDB datasource and the **RepoPulse - Overview** dashboard.
 
 - **URL:** http://localhost:3000
 - **Username:** `admin`
-- **Password:** `admin` 
+- **Password:** `admin`
 
-The dashboard shows:
-- Total LOC (stat panel)
-- Comment and blank line counts
-- LOC by file — top 10 (bar chart)
-- LOC by package (bar chart)
-- LOC over time (time series)
+### RepoPulse - Overview
+
+Unified dashboard correlating LOC and Code Churn across repositories.
+
+**📊 Repository Summary Statistics**
+- Total LOC, Comment Lines, Blank Lines, Total Code Churn (stat panels)
+
+**📈 LOC Trend**
+- LOC Over Time — total lines of code per repository (time series)
+- LOC Breakdown — code, comment, and blank lines stacked (time series)
+
+**🔄 Code Churn Trend**
+- Daily Code Churn (Added / Deleted / Modified) — stacked bar chart
+- Total Churn Over Time — line chart of daily total churn per repository
+- Cumulative Churn (Added / Deleted / Modified) — running total over time
+
+**🔥 Churn by File & Package**
+- Churn by File (Top 10 Most Volatile) — files with the largest absolute LOC change
+- Churn by Package — packages ranked by LOC change magnitude
+
+**📁 File & Package Breakdown**
+- LOC by File — top 10 files by total lines of code (bar chart)
+- LOC by Package — lines of code per package (bar chart)
+
+**🕐 Last Updated**
+- Last LOC Update and Last Churn Update timestamps
+
+The dashboard provides a **Repository** dropdown (multi-select) and responds to the Grafana **date range selector**.
 
 Key variables:
 
@@ -136,15 +207,28 @@ Key variables:
 | `INFLUX_ORG`          | `RepoPulseOrg`     | InfluxDB organization         |
 | `INFLUX_BUCKET`       | `repopulse_metrics`| InfluxDB bucket               |
 | `INFLUX_RETENTION_DAYS`| `90`              | Metric retention (days)       |
+| `WORKER_POOL_SIZE`    | `4`                | Concurrent analysis workers   |
 | `GF_ADMIN_USER`       | `admin`            | Grafana admin username        |
 | `GF_ADMIN_PASSWORD`   | `admin`            | Grafana admin password        |
+
+## Worker Pool
+
+POST `/jobs` submits analysis work to a thread-pool (default **4 workers**). Each worker clones the repo, counts LOC, writes metrics to InfluxDB, and stores the result in memory.
+
+```
+POST /jobs  →  queued  →  processing  →  completed / failed
+```
+
+Check progress with `GET /jobs/{job_id}` or see the whole queue with `GET /jobs`. Use `GET /workers/health` to see pool size, active count, and job totals.
+
+Set `WORKER_POOL_SIZE` in `.env` to change the number of concurrent workers.
 
 ## Project Structure
 
 ```
 RepoPulse/
 ├── src/
-│   ├── main.py              # FastAPI entrypoint
+│   ├── main.py              # FastAPI entrypoint + pool lifecycle
 │   ├── api/
 │   │   ├── models.py        # Pydantic request/response models
 │   │   └── routes.py        # All API endpoints
@@ -155,7 +239,8 @@ RepoPulse/
 │   ├── metrics/
 │   │   └── loc.py           # LOC counting logic
 │   └── worker/
-│       └── worker.py        # Background worker
+│       ├── pool.py          # Thread-pool worker pool + job queue
+│       └── worker.py        # Background metric writer
 ├── tests/                   # Pytest tests
 ├── monitoring/
 │   ├── dashboards/          # Grafana dashboard JSON
@@ -192,8 +277,32 @@ If PowerShell blocks script activation, run:
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-Or just run `./build.sh` (or `.
-build.bat` on Windows) — the build script runs tests inside Docker automatically.
+Or just run `./build.sh` (or `.\build.bat` on Windows) — the build script runs tests inside Docker automatically.
+
+## Weighted LOC — Rationale & Formula
+
+RepoPulse provides both **raw LOC** and **weighted LOC** in every response (file, package, and project level).
+
+### Formula
+
+```
+weighted_loc = (code_lines × 1.0) + (comment_lines × 0.5)
+```
+
+| Line type | Weight | Rationale |
+|-----------|--------|-----------|
+| **Code** | 1.0 | Executable logic — full complexity weight |
+| **Comment** (pure) | 0.5 | Documentation effort is valuable but carries less executable complexity |
+| **Mixed** (code + inline comment) | 1.0 | Treated as code — the line contains executable logic |
+| **Blank / excluded** | 0.0 | No developer effort — not counted |
+
+### Why 0.5 for comments?
+
+- Comments represent meaningful developer effort  but do not execute or add cyclomatic complexity.
+- A 0.5 multiplier balances between ignoring comments entirely and counting them equally.
+- This aligns with industry practices where weighted LOC provides a more accurate picture of a codebase's real "weight" for estimation and comparison.
+
+Both `loc` (raw) and `weighted_loc` are returned in every API response at file, package, and project granularity.
 
 ## Services
 
@@ -285,3 +394,110 @@ curl -X POST http://localhost:8080/analyze \
 ```
 
 Churn metrics are also written to InfluxDB (`repo_churn` and `repo_churn_daily` measurements).
+
+## WIP Metric (Work In Progress)
+
+WIP tells you how many items are currently being worked on in a Taiga board. For each day it gives you three numbers:
+
+| Metric         | What it means                                       |
+|----------------|-----------------------------------------------------|
+| `wip_count`    | Items someone is working on right now               |
+| `backlog_count`| Items waiting to be picked up (not started yet)     |
+| `done_count`   | Items that are finished                             |
+
+### How it works
+
+We use the Taiga API to pull project data and figure out where each item was on each day:
+
+1. Get the project info, statuses, and sprints from Taiga
+2. For each sprint, get the user stories that belong to it
+3. Go through each day in the sprint and check the status history to see what status each story had on that day
+4. Put each story into one of three buckets: **backlog** (first status column), **done** (any closed status), or **wip** (everything in between)
+
+For **kanban boards**, it works the same way but looks at tasks instead of user stories, and uses a date range instead of sprint dates.
+
+### `POST /metrics/wip`
+
+You need to send either a `taiga_url` (for scrum boards) or a `kanban_url` (for kanban boards). If you send both, kanban takes priority.
+
+- `taiga_url` — URL of a Taiga scrum board. Gets WIP for user stories per sprint.
+- `kanban_url` — URL of a Taiga kanban board. Gets WIP for tasks over a date range.
+- `recent_days` (optional) — For scrum: only look at sprints from the last X days. For kanban: how many days to look back (defaults to 30).
+
+**Scrum board example:**
+
+```sh
+curl -s -X POST http://localhost:8080/metrics/wip \
+  -H "Content-Type: application/json" \
+  -d '{
+    "taiga_url": "https://tree.taiga.io/project/taiga",
+    "recent_days": 90
+  }' | python3 -m json.tool
+```
+
+**Kanban board example:**
+
+```sh
+curl -s -X POST http://localhost:8080/metrics/wip \
+  -H "Content-Type: application/json" \
+  -d '{
+    "kanban_url": "https://tree.taiga.io/project/my-kanban-project",
+    "recent_days": 30
+  }' | python3 -m json.tool
+```
+
+**Example response:**
+
+```json
+{
+  "project_id": 396949,
+  "project_slug": "taiga",
+  "sprints_count": 1,
+  "sprints": [
+    {
+      "sprint_id": 123,
+      "sprint_name": "Sprint 1",
+      "date_range_start": "2024-01-01",
+      "date_range_end": "2024-01-14",
+      "daily_wip": [
+        {
+          "date": "2024-01-01",
+          "wip_count": 3,
+          "backlog_count": 7,
+          "done_count": 0
+        },
+        {
+          "date": "2024-01-02",
+          "wip_count": 5,
+          "backlog_count": 4,
+          "done_count": 1
+        }
+      ]
+    }
+  ]
+}
+```
+
+**How it works with scrum boards (`taiga_url`):**
+1. Gets the project slug from the URL
+2. Pulls statuses and sprints from the Taiga API
+3. If `recent_days` is set, it only picks sprints that ended within that time window. If none match, it picks the most recent sprint instead.
+4. For each sprint, it gets the user stories and their status change history
+5. Goes through each day and checks what status each story was in on that day
+6. Groups them into **backlog** (first status), **wip** (in progress statuses), or **done** (closed statuses)
+
+**How it works with kanban boards (`kanban_url`):**
+1. Gets the project slug from the URL
+2. Pulls task statuses and all tasks from Taiga
+3. Looks at the last 30 days by default (or whatever `recent_days` you set)
+4. For each day, checks the task history to figure out each task's status
+5. Groups them the same way: backlog, wip, or done
+6. If the board has been inactive, it automatically shifts the window to show the last 30 days before the most recent activity
+7. Response uses `sprint_name: "kanban"` and `sprint_id: null`
+
+| What happened         | What you get back                  |
+|-----------------------|------------------------------------|
+| Found sprints/tasks   | Daily WIP numbers for each sprint  |
+| No sprints found      | `404` error                        |
+| Bad URL               | `400` error                        |
+| Taiga API is down     | `503` error                        |
