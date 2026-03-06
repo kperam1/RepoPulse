@@ -195,7 +195,7 @@ async def analyze_repo(request: Request):
     try:
         # 1. Clone the repo (full clone needed for commit history)
         logger.info(f"Cloning {repo_url} …")
-        repo_path = cloner.clone(repo_url, shallow=False)
+        repo_path = cloner.clone(repo_url, shallow=True)
         logger.info(f"Clone complete → {repo_path}")
 
         # 2. Compute LOC
