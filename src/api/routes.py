@@ -349,7 +349,6 @@ async def analyze_repo(request: Request):
 
     repo_url = analyze_request.repo_url
 
-    # Determine date range — default to last 7 days if not provided
     today = datetime.now(timezone.utc).date()
     end_date = analyze_request.end_date or today.isoformat()
     start_date = analyze_request.start_date or (today - timedelta(days=7)).isoformat()
@@ -357,18 +356,17 @@ async def analyze_repo(request: Request):
     cloner = GitRepoCloner()
 
     try:
-        # 1. Clone the repo (full clone needed for commit history / churn)
-        logger.info(f"Cloning {repo_url} …")
-        repo_path = cloner.clone(repo_url, shallow=False)
-        logger.info(f"Clone complete → {repo_path}")
+        logger.info(f"Cloning {repo_url} (shallow clone, then deepen for churn)")
+        repo_path = cloner.clone(repo_url, shallow=True)
+        logger.info(f"Clone complete: {repo_path}")
 
-        # 2. Compute LOC
+        cloner.deepen_since(repo_path, start_date)
+
         project_loc = count_loc_in_directory(repo_path)
 
-        # 3. Compute daily churn
-        logger.info(f"Computing daily churn for {start_date} → {end_date}")
+        logger.info(f"Computing daily churn for {start_date} to {end_date}")
         daily = compute_daily_churn(repo_path, start_date, end_date)
-        logger.info(f"Daily churn days: {len(daily)}")
+        logger.info(f"Daily churn: {len(daily)} days with activity")
 
         churn_summary = {"added": 0, "deleted": 0, "modified": 0, "total": 0}
         for day_churn in daily.values():
@@ -377,14 +375,9 @@ async def analyze_repo(request: Request):
         churn_summary["modified"] = min(churn_summary["added"], churn_summary["deleted"])
         churn_summary["total"] = churn_summary["added"] + churn_summary["deleted"]
 
-        # 4. Write LOC metrics to InfluxDB
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
-        collected_at = datetime.now(timezone.utc).isoformat()
-        
-        # Get commit information from cloned repo
-        commit_hash = cloner.commit_hash  # Automatically extracted during clone
+        commit_hash = cloner.commit_hash
         commit_timestamp = GitRepoCloner.get_commit_timestamp(repo_path, commit_hash)
-        
         logger.info(f"Repository at commit {commit_hash[:8] if commit_hash else 'unknown'}")
 
         try:
@@ -415,7 +408,6 @@ async def analyze_repo(request: Request):
         except Exception as influx_err:
             logger.warning(f"Failed to write daily churn to InfluxDB: {influx_err}")
 
-        # 5. Build LOC response
         loc_response = ProjectLOCResponse(
             project_root=repo_path,
             total_loc=project_loc.total_loc,
@@ -480,7 +472,6 @@ async def analyze_repo(request: Request):
             ],
         )
 
-        # 6. Return combined response
         return AnalyzeResponse(
             repo_url=repo_url,
             start_date=start_date,

@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import subprocess
@@ -5,8 +6,7 @@ import tempfile
 from datetime import datetime
 from typing import Optional
 
-logger_module = __import__("logging")
-logger = logger_module.getLogger("repopulse.core.git_clone")
+logger = logging.getLogger("repopulse.core.git_clone")
 
 
 class GitCloneError(Exception):
@@ -56,6 +56,31 @@ class GitRepoCloner:
         except Exception as e:
             self.cleanup()
             raise GitCloneError(f"Failed to clone repo: {e}")
+
+    def deepen_since(self, repo_path: str, since_date: str) -> None:
+        """Fetch additional history into a shallow clone back to since_date.
+
+        Runs ``git fetch --shallow-since=<date> origin`` so that commits
+        from *since_date* onwards become available for log / diff operations
+        without downloading the entire repository history.
+        """
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        cmd = [
+            "git", "-C", repo_path,
+            "fetch", "--shallow-since", since_date, "origin",
+        ]
+        logger.info(f"Deepening clone since {since_date}")
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120, env=env,
+            )
+            if result.returncode != 0:
+                logger.warning(f"git fetch --shallow-since failed: {result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            logger.warning("git fetch --shallow-since timed out")
+        except Exception as e:
+            logger.warning(f"Failed to deepen clone: {e}")
 
     @staticmethod
     def get_commit_hash(repo_path: str) -> Optional[str]:
