@@ -62,6 +62,7 @@ Once running, the API is at **http://localhost:8080**. Interactive docs at [http
 | GET    | `/workers/health`| Worker pool health (pool size, queue depth, etc.)|
 | POST   | `/metrics/loc`   | Compute LOC for a local repo path                |
 | POST   | `/analyze`       | Clone a GitHub repo, compute LOC, store in InfluxDB |
+| POST   | `/metrics/wip`   | Compute WIP metrics from a Taiga board              |
 | GET    | `/metrics/timeseries/snapshots/{repo_id}/latest` | Latest snapshot |
 | GET    | `/metrics/timeseries/snapshots/{repo_id}/range` | Snapshots in date range |
 | GET    | `/metrics/timeseries/snapshots/{repo_id}/at/{timestamp}` | Point-in-time snapshot |
@@ -393,3 +394,95 @@ curl -X POST http://localhost:8080/analyze \
 ```
 
 Churn metrics are also written to InfluxDB (`repo_churn` and `repo_churn_daily` measurements).
+
+## WIP Metric (Work In Progress)
+
+WIP tells you how many items are currently being worked on in a Taiga board. For each day it gives you three numbers:
+
+| Metric         | What it means                                       |
+|----------------|-----------------------------------------------------|
+| `wip_count`    | Items someone is working on right now               |
+| `backlog_count`| Items waiting to be picked up (not started yet)     |
+| `done_count`   | Items that are finished                             |
+
+### How it works
+
+We use the Taiga API to pull project data and figure out where each item was on each day:
+
+1. Get the project info, statuses, and sprints from Taiga
+2. For each sprint, get the user stories that belong to it
+3. Go through each day in the sprint and check the status history to see what status each story had on that day
+4. Put each story into one of three buckets: **backlog** (first status column), **done** (any closed status), or **wip** (everything in between)
+
+For **kanban boards**, it works the same way but looks at tasks instead of user stories, and uses a date range instead of sprint dates.
+
+### `POST /metrics/wip`
+
+You need to send either a `taiga_url` (for scrum boards) or a `kanban_url` (for kanban boards). If you send both, kanban takes priority.
+
+- `taiga_url` — URL of a Taiga scrum board. Gets WIP for user stories per sprint.
+- `kanban_url` — URL of a Taiga kanban board. Gets WIP for tasks over a date range.
+- `recent_days` (optional) — For scrum: only look at sprints from the last X days. For kanban: how many days to look back (defaults to 30).
+
+**Scrum board example:**
+
+```sh
+curl -s -X POST http://localhost:8080/metrics/wip \
+  -H "Content-Type: application/json" \
+  -d '{
+    "taiga_url": "https://tree.taiga.io/project/taiga",
+    "recent_days": 90
+  }' | python3 -m json.tool
+```
+
+**Kanban board example:**
+
+```sh
+curl -s -X POST http://localhost:8080/metrics/wip \
+  -H "Content-Type: application/json" \
+  -d '{
+    "kanban_url": "https://tree.taiga.io/project/my-kanban-project",
+    "recent_days": 30
+  }' | python3 -m json.tool
+```
+
+**Example response:**
+
+```json
+{
+  "project_id": 396949,
+  "project_slug": "taiga",
+  "sprints_count": 1,
+  "sprints": [
+    {
+      "sprint_id": 123,
+      "sprint_name": "Sprint 1",
+      "date_range_start": "2024-01-01",
+      "date_range_end": "2024-01-14",
+      "daily_wip": [
+        {
+          "date": "2024-01-01",
+          "wip_count": 3,
+          "backlog_count": 7,
+          "done_count": 0
+        },
+        {
+          "date": "2024-01-02",
+          "wip_count": 5,
+          "backlog_count": 4,
+          "done_count": 1
+        }
+      ]
+    }
+  ]
+}
+```
+
+If the kanban board has no activity in the last 30 days, the response will automatically shift to show the 30 days before the last activity. You can tell by checking `date_range_start` and `date_range_end` in the response.
+
+| What happened         | What you get back                  |
+|-----------------------|------------------------------------|
+| Found sprints/tasks   | Daily WIP numbers for each sprint  |
+| No sprints found      | `404` error                        |
+| Bad URL               | `400` error                        |
+| Taiga API is down     | `503` error                        |

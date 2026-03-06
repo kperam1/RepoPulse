@@ -1,6 +1,7 @@
 import logging
 import os
 import uuid
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -28,6 +29,8 @@ from src.api.models import (
     FileLOCResponse,
     ResultMetadata,
     WorkerHealthResponse,
+    WIPRequest,
+    WIPResponse,
     TimeSeriesMetricSnapshot,
     SnapshotHistoryResponse,
     LatestSnapshotResponse,
@@ -44,6 +47,7 @@ from src.api.models import (
 )
 from src.metrics.loc import count_loc_in_directory
 from src.metrics.churn import compute_repo_churn, compute_daily_churn
+from src.metrics.wip import calculate_daily_wip_all_sprints, calculate_kanban_wip, TaigaFetchError
 from src.core.influx import (
     get_client,
     write_loc_metric,
@@ -588,6 +592,137 @@ async def analyze_repo(request: Request):
         return JSONResponse(status_code=500, content={"detail": str(e)})
     finally:
         cloner.cleanup()
+
+
+# --- WIP Metric Endpoint ---
+
+
+@router.post("/metrics/wip", response_model=WIPResponse, status_code=200)
+async def compute_wip(request: Request):
+    """Compute WIP (Work In Progress) metric for a Taiga board."""
+    try:
+        body = await request.json()
+    except Exception as e:
+        # Normalize JSON decode errors to a clear 400 response rather than 500
+        try:
+            from json import JSONDecodeError
+            if isinstance(e, JSONDecodeError):
+                logger.warning(f"Invalid JSON body: {e}")
+                return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+        except Exception:
+            pass
+        logger.warning(f"Failed to parse request body: {e}")
+        return JSONResponse(status_code=400, content={"detail": "Invalid request body"})
+    logger.info(f"WIP metric request: {body}")
+
+    try:
+        wip_request = WIPRequest(**body)
+    except ValidationError as e:
+        errors = e.errors()
+        messages = [err["msg"] for err in errors]
+        logger.warning(f"WIP validation failed: {messages}")
+        return JSONResponse(
+            status_code=400,
+            content={"detail": messages},
+        )
+
+    kanban_url = wip_request.kanban_url
+    taiga_url = wip_request.taiga_url
+    recent = wip_request.recent_days
+
+    # If kanban_url is provided, use kanban mode (task-level WIP)
+    use_kanban = kanban_url is not None
+    board_url = kanban_url if use_kanban else taiga_url
+
+    try:
+        if use_kanban:
+            logger.info(f"Calculating kanban WIP metrics: {board_url} recent_days={recent}")
+            kanban_metric = calculate_kanban_wip(board_url, recent_days=recent)
+
+            sprint_resp = {
+                "project_id": kanban_metric.project_id,
+                "project_slug": kanban_metric.project_slug,
+                "sprint_id": None,
+                "sprint_name": "kanban",
+                "date_range_start": kanban_metric.date_range_start,
+                "date_range_end": kanban_metric.date_range_end,
+                "daily_wip": [
+                    {
+                        "date": daily.date,
+                        "wip_count": daily.wip_count,
+                        "backlog_count": daily.backlog_count,
+                        "done_count": daily.done_count,
+                    }
+                    for daily in kanban_metric.daily_wip
+                ],
+            }
+
+            response = WIPResponse(
+                project_id=kanban_metric.project_id,
+                project_slug=kanban_metric.project_slug,
+                sprints_count=1,
+                sprints=[sprint_resp],
+            )
+
+            logger.info(f"Kanban WIP metrics calculated: {len(kanban_metric.daily_wip)} days")
+            return response
+
+        # Scrum mode: user-story WIP per sprint
+        logger.info(f"Calculating daily WIP metrics for all sprints: {board_url} recent_days={recent}")
+        sprints_data = calculate_daily_wip_all_sprints(board_url, recent_days=recent)
+
+        if not sprints_data:
+            logger.warning(f"No sprints found for {board_url}")
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "No sprints found for the specified project"},
+            )
+
+        # Extract project info from first sprint result
+        project_id = sprints_data[0].project_id
+        project_slug = sprints_data[0].project_slug
+
+        # Build response with all sprints
+        sprints_response = []
+        for metric in sprints_data:
+            sprint_resp = {
+                "project_id": metric.project_id,
+                "project_slug": metric.project_slug,
+                "sprint_id": metric.sprint_id,
+                "sprint_name": metric.sprint_name,
+                "date_range_start": metric.date_range_start,
+                "date_range_end": metric.date_range_end,
+                "daily_wip": [
+                    {
+                        "date": daily.date,
+                        "wip_count": daily.wip_count,
+                        "backlog_count": daily.backlog_count,
+                        "done_count": daily.done_count,
+                    }
+                    for daily in metric.daily_wip
+                ],
+            }
+            sprints_response.append(sprint_resp)
+
+        response = WIPResponse(
+            project_id=project_id,
+            project_slug=project_slug,
+            sprints_count=len(sprints_response),
+            sprints=sprints_response,
+        )
+
+        logger.info(f"Daily WIP metrics calculated for {len(sprints_response)} sprints")
+        return response
+
+    except ValueError as e:
+        logger.warning(f"Invalid Taiga URL: {e}")
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    except TaigaFetchError as e:
+        logger.error(f"Taiga API error: {e}")
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+    except Exception as e:
+        logger.error(f"WIP metric calculation failed: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
 
 
 @router.get("/metrics/timeseries/snapshots/{repo_id}/latest", response_model=LatestSnapshotResponse)
