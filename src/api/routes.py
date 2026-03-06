@@ -581,8 +581,18 @@ async def analyze_repo(request: Request):
             ],
         )
 
-        # 6. Return LOC response
-        return loc_response
+
+
+
+            # 6. Return combined response
+        return AnalyzeResponse(
+            repo_url=repo_url,
+            start_date=start_date,
+            end_date=end_date,
+            loc=loc_response,
+            churn=ChurnResponse(**churn_summary),
+            churn_daily={day: ChurnResponse(**vals) for day, vals in daily.items()},
+        )
 
     except GitCloneError as e:
         logger.error(f"Clone failed for {repo_url}: {e}")
