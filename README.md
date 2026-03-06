@@ -275,6 +275,17 @@ curl -s -X POST http://localhost:8080/metrics/wip \
   }' | python3 -m json.tool
 ```
 
+Kanban with epic filter:
+
+```sh
+curl --location 'http://localhost:8080/metrics/wip' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "taiga_url": "https://tree.taiga.io/project/lesly-we-play-sport/kanban?epic=146103",
+    "recent_days": 30
+  }'
+```
+
 | Scenario | Response |
 |----------|----------|
 | Found sprints or tasks | Daily WIP numbers for each sprint |
