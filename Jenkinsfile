@@ -73,7 +73,10 @@ pipeline {
         stage('Service Test') {
             steps {
                 sh '''
-                    echo "Starting containers"
+                    echo "Tearing down leftover containers from Unit Tests"
+                    docker compose down --volumes --remove-orphans || true
+
+                    echo "Starting containers fresh"
                     docker compose up -d
 
                     echo "Waiting for API to become healthy"
